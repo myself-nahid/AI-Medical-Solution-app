@@ -1,0 +1,28 @@
+# Web Framework
+fastapi
+uvicorn[standard]
+
+# Pydantic for data validation (comes with FastAPI)
+
+# LLM and AI Services
+google-generativeai         # For Gemini 1.5 Pro
+openai-whisper              # For audio transcription (or use the API)
+
+# File Processing
+pypdf                       # For extracting text from PDFs
+Pillow                      # For basic image handling
+python-magic                # To identify file types easily
+
+# Document Generation
+python-docx                 # To create the final .docx report
+
+# Testing
+pytest
+httpx                       # For making requests in tests
+requests
+
+# Environment variables
+python-dotenv
+
+
+python-multipart
