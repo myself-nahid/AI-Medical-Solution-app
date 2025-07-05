@@ -20,7 +20,7 @@ This service exposes a set of RESTful APIs that handle file processing, interact
 ## Project Architecture
 
 The service is structured to separate concerns, making it modular and maintainable.
-
+```
 clinical-notes-ai-service/
 ├── app/
 │ ├── api/
@@ -40,7 +40,7 @@ clinical-notes-ai-service/
 ├── .env.example # Example environment file
 ├── .gitignore
 └── requirements.txt
-
+```
 
 ---
 
@@ -65,3 +65,41 @@ Follow these steps to get the development environment running.
 ```bash
 git clone https://github.com/myself-nahid/AI-Medical-Solution-app.git
 cd AI-Medical-Solution-app
+```
+**2. Create and activate a virtual environment:**
+This is a best practice to isolate project dependencies.
+
+On Windows:
+```
+python -m venv venv
+.\venv\Scripts\activate
+```
+
+**3. Install the required packages:**
+```
+pip install -r requirements.txt
+```
+
+**4. Set up environment variables:**
+Create a .env file in the project root by copying the example file.
+```
+# On Windows (CMD)
+copy .env.example .env
+```
+
+Now, open the .env file and add your Google API key:
+```
+# .env
+
+# Get your API key from Google AI Studio
+GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY_HERE"
+```
+
+## Running the Application
+Once the setup is complete, you can run the development server.
+```
+uvicorn app.main:app --reload
+```
+This command will start the server, and --reload will make it automatically restart after any code changes.
+The API will be available at http://127.0.0.1:8000.
+You can access the interactive API documentation (Swagger UI) at http://127.0.0.1:8000/docs. This is the best place for developers to test the endpoints live.
