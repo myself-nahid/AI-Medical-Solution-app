@@ -1,4 +1,3 @@
-# app/api/endpoints.py
 from fastapi import APIRouter, UploadFile, File, Depends, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List, Optional, Dict
@@ -68,7 +67,6 @@ from app.api.models import AnalysisPlanRequest
 
 @router.post("/generate_analysis_plan", response_model=GeneratedSectionResponse)
 async def generate_analysis_plan_endpoint(
-    # The parameters here MUST match the keys you use in Postman's form-data
     request_data: str = Form(...), 
     files: List[UploadFile] = File(...)
 ):
@@ -77,7 +75,6 @@ async def generate_analysis_plan_endpoint(
     Accepts previous section data as a JSON string and new files.
     """
     try:
-        # This line parses the JSON string from the form into our Pydantic model
         request_body = parse_obj_as(AnalysisPlanRequest, json.loads(request_data))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON format for request_data.")
@@ -91,11 +88,13 @@ async def generate_analysis_plan_endpoint(
         language=request_body.language
     )
     
-    return GeneratedSectionResponse(
+    response = GeneratedSectionResponse(
         section_name=SectionName.ANALYSIS_AND_PLAN.value,
         generated_text=generated_text
     )
-    
+    print("Analysis Plan Response:", response.dict())
+    return response
+
 @router.post("/quick_report", response_model=GeneratedSectionResponse)
 async def quick_report_endpoint(
     files: List[UploadFile] = File(...),
@@ -104,19 +103,28 @@ async def quick_report_endpoint(
     """
     Generates a quick summary from uploaded files without the full clinical structure.
     """
+    # process each file and print its details
+    for file in files:
+        print(f"Received file: {file.filename}, Content type: {file.content_type}")
+        contents = await file.read()
+        print(f"File size: {len(contents)} bytes")
+        await file.seek(0)
+
     extracted_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
         section_name=SectionName.QUICK_REPORT.value,
         extracted_text=extracted_text,
-        physician_notes="", # No notes for quick reports
+        physician_notes="", 
         language=language
     )
     
-    return GeneratedSectionResponse(
+    response = GeneratedSectionResponse(
         section_name=SectionName.QUICK_REPORT.value,
         generated_text=generated_text
     )
+    print("Quick Report Response:", response.dict())
+    return response
 
 @router.post("/generate_document")
 async def generate_docx_endpoint(request: DocumentRequest):
