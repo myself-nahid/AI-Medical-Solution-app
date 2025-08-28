@@ -12,7 +12,8 @@ async def generate_structured_text(
     section_name: str, 
     extracted_text: str, 
     physician_notes: str,
-    language: str = "English"
+    language: str = "English",
+    specialty: str = "Internal Medicine"
 ) -> str:
     """Generates a structured paragraph for a given clinical section."""
     model = genai.GenerativeModel('gemini-2.5-flash')
@@ -34,7 +35,8 @@ async def generate_structured_text(
     
     final_prompt = prompt_template.format(
         language=language,
-        context=full_context
+        context=full_context,
+        specialty=specialty
     )
     
     response = await model.generate_content_async(final_prompt)
@@ -44,7 +46,8 @@ async def generate_analysis_and_plan(
     previous_sections: Dict[str, str],
     analysis_plan_text: str,
     physician_notes: str,
-    language: str = "English"
+    language: str = "English",
+    specialty: str = "Internal Medicine"
 ) -> str:
     """Generates the Analysis and Plan section using all previous context."""
     model = genai.GenerativeModel('gemini-2.5-flash')
@@ -72,7 +75,8 @@ async def generate_analysis_and_plan(
     final_prompt = prompt_template.format(
         language=language,
         previous_summaries=previous_context,
-        current_section_context=current_context
+        current_section_context=current_context,
+        specialty=specialty
     )
     
     response = await model.generate_content_async(final_prompt)

@@ -53,7 +53,8 @@ async def generate_section_endpoint(
         section_name=section_name.value,
         extracted_text=extracted_text,
         physician_notes=physician_notes,
-        language=language
+        language=language,
+        specialty="Internal Medicine"
     )
     
     return GeneratedSectionResponse(
@@ -85,7 +86,8 @@ async def generate_analysis_plan_endpoint(
         previous_sections=request_body.previous_sections,
         analysis_plan_text=analysis_plan_text,
         physician_notes=request_body.physician_notes,
-        language=request_body.language
+        language=request_body.language,
+        specialty=request_body.specialty
     )
     
     response = GeneratedSectionResponse(

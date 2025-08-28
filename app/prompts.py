@@ -1,4 +1,3 @@
-# app/prompts.py
 from enum import Enum
 
 class SectionName(str, Enum):
@@ -12,8 +11,8 @@ class SectionName(str, Enum):
 
 PROMPTS = {
     SectionName.PRESENT_ILLNESS: """
-    You are a medical scribe assistant. Based on the following context, write a concise and structured 'History of Present Illness' (HPI) paragraph in {language}.
-    The paragraph should be in a narrative format, suitable for a clinical note.
+    You are an expert medical scribe specializing in **{specialty}**. Based on the following context, write a concise and structured 'History of Present Illness' (HPI) paragraph in {language}.
+    The paragraph should be in a narrative format, using clinical language and terminology appropriate for a **{specialty}** specialist.
     Focus only on information relevant to the HPI.
     
     Context:
@@ -22,8 +21,8 @@ PROMPTS = {
     Generated HPI:
     """,
     SectionName.PAST_MEDICAL_HISTORY: """
-    You are a medical scribe assistant. From the context below, create a list of 'Past Medical History and Risk Factors' in {language}.
-    Format it as a bulleted or numbered list. Include relevant surgical history, family history, and social history if mentioned.
+    You are an expert medical scribe specializing in **{specialty}**. From the context below, create a list of 'Past Medical History and Risk Factors' in {language}.
+    Format it as a bulleted or numbered list. Prioritize information most relevant to a **{specialty}** specialist.
     
     Context:
     {context}
@@ -31,9 +30,9 @@ PROMPTS = {
     Generated Past Medical History:
     """,
     SectionName.PHYSICAL_EXAM: """
-    You are a medical scribe assistant. Synthesize the provided information into a 'Physical Exam' summary in {language}.
+    You are an expert medical scribe specializing in **{specialty}**. Synthesize the provided information into a 'Physical Exam' summary in {language}.
     If numerical data like vital signs, range of motion, or measurements for ABI/BMI are present, extract them and perform calculations if necessary (e.g., calculate BMI if height and weight are given).
-    Describe any physical findings from images objectively.
+    Describe any physical findings from images objectively, using terminology appropriate for a **{specialty}** specialist.
     
     Context:
     {context}
@@ -41,8 +40,8 @@ PROMPTS = {
     Generated Physical Exam Summary:
     """,
     SectionName.LABS_AND_IMAGING: """
-    You are a medical scribe assistant. Summarize the key findings from the lab reports and imaging studies provided in the context below. Write it in {language}.
-    Highlight abnormal values and significant findings. Mention the name and date of the study if available.
+    You are an expert medical scribe specializing in **{specialty}**. Summarize the key findings from the lab reports and imaging studies provided in the context below, in {language}.
+    Highlight abnormal values and significant findings. Mention the name and date of the study if available. Interpret the findings from the perspective of a **{specialty}** specialist.
     
     Context:
     {context}
@@ -50,8 +49,8 @@ PROMPTS = {
     Generated Summary of Labs and Imaging:
     """,
     SectionName.PROPOSED_DIAGNOSIS: """
-    You are a medical scribe assistant. Based on the context provided, generate a list of 'Proposed Diagnoses' or differential diagnoses in {language}.
-    Order them from most likely to least likely if possible. Provide a brief one-sentence justification for each if the context supports it.
+    You are an expert medical diagnostician specializing in **{specialty}**. Based on the context provided, generate a list of 'Proposed Diagnoses' or differential diagnoses in {language}.
+    Order them from most likely to least likely if possible. Provide a brief one-sentence justification for each, based on the clinical reasoning of a **{specialty}** specialist.
     
     Context:
     {context}
@@ -59,12 +58,12 @@ PROMPTS = {
     Generated Proposed Diagnosis:
     """,
     SectionName.ANALYSIS_AND_PLAN: """
-    You are an expert medical consultant. You will create a comprehensive 'Analysis and Plan' section in {language}.
+    You are an expert medical consultant specializing in **{specialty}**. Your task is to create a comprehensive 'Analysis and Plan' section in {language}, using the clinical reasoning of a **{specialty}** specialist.
+    
     First, review the summaries of the previous sections of the clinical note provided below.
     Then, consider the specific information uploaded for the 'Analysis and Plan' section.
     
-    Your task is to synthesize ALL of this information into a coherent clinical assessment and a clear, actionable plan.
-    The plan should include recommendations for further tests, treatments, consultations, and patient education.
+    Synthesize ALL of this information into a coherent clinical assessment and an actionable plan tailored for your specialty.
     
     **Summaries from Previous Sections:**
     {previous_summaries}
@@ -75,8 +74,8 @@ PROMPTS = {
     Generated Analysis and Plan:
     """,
     SectionName.QUICK_REPORT: """
-    You are an AI assistant. Your task is to provide a quick and concise summary of the provided information in {language}.
-    If it's text, summarize it. If it's an audio transcript, clean it up and summarize. If it's a lab/report, extract the key findings.
+    You are an AI assistant specializing in medical data extraction for a **{specialty}** specialist. Your task is to provide a quick and concise summary of the provided information in {language}.
+    If it's text, summarize it. If it's an audio transcript, clean it up and summarize. If it's a lab report or imaging study, extract the key findings. Focus on what is most relevant to the given specialty.
     
     Context:
     {context}
@@ -86,8 +85,11 @@ PROMPTS = {
 }
 
 def get_prompt_for_section(section_name: str) -> str:
+    """
+    Safely retrieves the prompt template for a given section name.
+    Raises a ValueError if the section name is not valid.
+    """
     try:
-        # Use the Enum to access the dictionary for safety
         return PROMPTS[SectionName(section_name)]
     except (KeyError, ValueError):
-        raise ValueError(f"Invalid section name: {section_name}")
+        raise ValueError(f"Invalid section name provided: '{section_name}'")
