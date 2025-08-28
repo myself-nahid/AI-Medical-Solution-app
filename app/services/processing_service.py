@@ -1,12 +1,12 @@
 import whisper
 import google.generativeai as genai
 from fastapi import UploadFile
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import tempfile
 import os
 
 from app.core.config import settings
 
-# Configure Gemini
 genai.configure(api_key=settings.GOOGLE_API_KEY)
 
 
@@ -21,7 +21,6 @@ except Exception as e:
     print("-----------------------------------")
     whisper_model = None
 
-# --- Service Functions ---
 
 async def process_audio(file: UploadFile) -> str:
     """
@@ -35,11 +34,8 @@ async def process_audio(file: UploadFile) -> str:
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
-            # Asynchronously read the content from the uploaded file
             content = await file.read()
-            # Write the content to our new temporary file on disk
             temp_file.write(content)
-            # Store the full, OS-specific path to this temporary file
             temp_path = temp_file.name
 
         result = whisper_model.transcribe(temp_path, fp16=False)
@@ -54,42 +50,46 @@ async def process_audio(file: UploadFile) -> str:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
 
-
 async def process_pdf_or_image(file: UploadFile) -> str:
     """
-    Extracts text and descriptions from images or PDFs using Google's Gemini 1.5 Pro model.
-    This function operates directly with the file's bytes in memory, making it efficient
-    as it avoids writing to the disk.
+    Extracts text and descriptions from images or PDFs using Google's Gemini model.
+    This version includes crucial safety settings to allow for medical imagery.
     """
     try:
-        # Asynchronously read the entire file content into a bytes object in memory
         file_bytes = await file.read()
+        mime_type = file.content_type
         
-        # Prepare the file data payload for the Gemini API, including the MIME type
-        # which is crucial for the model to know how to interpret the data.
         file_data = {
-            'mime_type': file.content_type,
+            'mime_type': mime_type,
             'data': file_bytes
         }
         
         model = genai.GenerativeModel('gemini-2.5-flash')
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
         
-        # A carefully crafted prompt instructing the AI on how to handle different file types.
         prompt = """
         You are an expert medical data processor. Analyze the content of the provided file.
 
-        - If the file is a document (e.g., PDF lab report, clinical note, text on an image):
-          Extract all relevant text verbatim. Preserve formatting like lists and tables where possible.
-          Organize the extracted information clearly.
-
-        - If the file is a photograph (e.g., a wound, a skin lesion, a physical finding):
+        - If it is a photograph (e.g., a wound, a skin lesion, a physical finding):
           Provide a detailed, objective, and clinical description. Do NOT diagnose or interpret.
           Focus on observable characteristics like size, shape, color, texture, and surrounding tissue.
-          Example: 'Image displays an elliptical, 5 cm ulcer on the medial malleolus. The wound bed is 80% covered with pink granulation tissue and 20% with yellow slough. The periwound skin shows moderate erythema and scaling.'
         """
         
-        # Asynchronously call the Gemini API to generate content based on the prompt and file data.
-        response = await model.generate_content_async([prompt, file_data])
+        response = await model.generate_content_async(
+            [prompt, file_data],
+            safety_settings=safety_settings
+        )
+        
+        if not response.parts:
+            finish_reason = response.candidates[0].finish_reason if response.candidates else 'UNKNOWN'
+            print(f"Gemini response blocked. Finish Reason: {finish_reason}")
+            return f"[AI response was blocked by content policies. Finish Reason: {finish_reason}]"
+            
         return response.text.strip()
 
     except Exception as e:

@@ -26,5 +26,6 @@ python-dotenv
 
 # handling multipart/form-data
 python-multipart
+
 # handling audio data
 ffmpeg
