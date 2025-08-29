@@ -16,7 +16,7 @@ async def generate_structured_text(
     specialty: str = "Internal Medicine"
 ) -> str:
     """Generates a structured paragraph for a given clinical section."""
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     
     prompt_template = get_prompt_for_section(section_name)
     
@@ -50,7 +50,7 @@ async def generate_analysis_and_plan(
     specialty: str = "Internal Medicine"
 ) -> str:
     """Generates the Analysis and Plan section using all previous context."""
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-pro')
     
     prompt_template = get_prompt_for_section("Analysis and Plan")
     
