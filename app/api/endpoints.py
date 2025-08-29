@@ -10,28 +10,36 @@ from app.prompts import SectionName
 
 router = APIRouter()
 
-async def process_files(files: List[UploadFile]) -> str:
-    """Helper function to process a list of uploaded files."""
-    extracted_texts = []
-    for file in files:
-        if not file or file.filename == '':
-            continue
-        
-        content_type = file.content_type
-        if "audio" in content_type:
-            text = await processing_service.process_audio(file)
-        elif "image" in content_type or "pdf" in content_type:
-            text = await processing_service.process_pdf_or_image(file)
-        else:
-            # Simple text extraction for other file types as a fallback
-            try:
-                text = (await file.read()).decode('utf-8')
-            except:
-                text = "[Unsupported file type]"
-        
-        extracted_texts.append(f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n")
+import asyncio 
+
+async def process_single_file(file: UploadFile) -> str:
+    """Helper function to process one file. Moved logic here."""
+    if not file or file.filename == '':
+        return ""
     
-    return "\n".join(extracted_texts)
+    content_type = file.content_type
+    text = ""
+    if "audio" in content_type:
+        text = await processing_service.process_audio(file)
+    elif "image" in content_type or "pdf" in content_type:
+        text = await processing_service.process_pdf_or_image(file)
+    else:
+        try:
+            text_bytes = await file.read()
+            text = text_bytes.decode('utf-8')
+        except:
+            text = "[Unsupported file type]"
+            
+    return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
+
+
+async def process_files(files: List[UploadFile]) -> str:
+    """Helper function to process a list of uploaded files IN PARALLEL."""
+    tasks = [process_single_file(file) for file in files]
+    
+    results = await asyncio.gather(*tasks)
+    
+    return "\n".join(results)
 
 @router.post("/generate_section/{section_name}", response_model=GeneratedSectionResponse)
 async def generate_section_endpoint(
