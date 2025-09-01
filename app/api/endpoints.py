@@ -46,7 +46,9 @@ async def generate_section_endpoint(
     section_name: SectionName,
     files: List[UploadFile] = File(...),
     physician_notes: Optional[str] = Form(""),
-    language: str = Form("English")
+    language: str = Form(...), 
+    specialty: str = Form(...),
+    user_id: str = Form(...)
 ):
     """
     Generates a summary for any standard section (not Analysis & Plan).
@@ -54,7 +56,8 @@ async def generate_section_endpoint(
     """
     if section_name == SectionName.ANALYSIS_AND_PLAN:
         raise HTTPException(status_code=400, detail="Use the /generate_analysis_plan endpoint for this section.")
-
+    
+    print(f"Received from frontend - Language: {language}, Specialty: {specialty}, Physician Notes: {physician_notes}, user-id: {user_id}")
     extracted_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
@@ -77,7 +80,8 @@ from app.api.models import AnalysisPlanRequest
 @router.post("/generate_analysis_plan", response_model=GeneratedSectionResponse)
 async def generate_analysis_plan_endpoint(
     request_data: str = Form(...), 
-    files: List[UploadFile] = File(...)
+    files: List[UploadFile] = File(...),
+    user_id: str = Form(...)
 ):
     """
     Generates the 'Analysis and Plan' summary, considering all previous sections.
@@ -88,6 +92,7 @@ async def generate_analysis_plan_endpoint(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON format for request_data.")
 
+    print(f"Request data: {request_data}, files: {files}, user-id: {user_id}")
     analysis_plan_text = await process_files(files)
 
     generated_text = await generation_service.generate_analysis_and_plan(
@@ -108,7 +113,9 @@ async def generate_analysis_plan_endpoint(
 @router.post("/quick_report", response_model=GeneratedSectionResponse)
 async def quick_report_endpoint(
     files: List[UploadFile] = File(...),
-    language: str = Form("English")
+    language: str = Form(...),
+    specialty: str = Form(...),
+    user_id: str = Form(...)
 ):
     """
     Generates a quick summary from uploaded files without the full clinical structure.
