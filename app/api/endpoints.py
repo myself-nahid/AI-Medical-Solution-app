@@ -34,6 +34,13 @@ async def generate_section_endpoint(
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
+    has_tokens = await token_service.check_user_tokens(user_id=user_id)
+    if not has_tokens:
+        raise HTTPException(
+            status_code=402,
+            detail="You have no tokens remaining"
+        )
+
     extracted_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
@@ -60,6 +67,12 @@ async def generate_analysis_plan_endpoint(
     files: List[UploadFile] = File(...)
 ):
     request_body = parse_obj_as(AnalysisPlanRequest, json.loads(request_data))
+    has_tokens = await token_service.check_user_tokens(user_id=request_body.user_id)
+    if not has_tokens:
+        raise HTTPException(
+            status_code=402,
+            detail="You have no tokens remaining"
+        )
     analysis_plan_text = await process_files(files)
 
     generated_text = await generation_service.generate_analysis_and_plan(
@@ -87,6 +100,13 @@ async def quick_report_endpoint(
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
+    has_tokens = await token_service.check_user_tokens(user_id=user_id)
+    if not has_tokens:
+        raise HTTPException(
+            status_code=402,
+            detail="You have no tokens remaining"
+        )
+   
     extracted_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
