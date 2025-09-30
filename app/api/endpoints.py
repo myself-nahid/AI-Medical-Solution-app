@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
 from typing import List, Optional, Dict
 import json
 from pydantic import parse_obj_as
@@ -8,6 +8,26 @@ from app.services import processing_service, generation_service, token_service
 from app.prompts import SectionName
 
 router = APIRouter()
+
+async def debug_and_log_form_data(request: Request):
+    """
+    This is a dependency function that will run before the endpoint.
+    It will print the raw form data to the console for debugging.
+    """
+    print("\n--- NEW REQUEST RECEIVED ---")
+    try:
+        form_data = await request.form()
+        print("Received form fields:")
+        for key in form_data.keys():
+            item = form_data.getlist(key)
+            if isinstance(item[0], UploadFile):
+                for file in item:
+                    print(f"  - Key: '{key}', Filename: '{file.filename}', Content-Type: '{file.content_type}'")
+            else:
+                print(f"  - Key: '{key}', Value: '{item[0]}'")
+    except Exception as e:
+        print(f"!!! Could not parse form data: {e} !!!")
+    print("--- END OF REQUEST DATA ---\n")
 
 async def process_single_file(file: UploadFile) -> str:
     if not file or not file.filename: return ""
