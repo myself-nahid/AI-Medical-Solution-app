@@ -2,6 +2,9 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 from app.prompts import SectionName
 
+class SectionGenerationRequest(BaseModel):
+    previous_sections: Optional[Dict[str, str]] = {}
+
 class GenerateSectionRequest(BaseModel):
     physician_notes: Optional[str] = ""
     language: str = "English"

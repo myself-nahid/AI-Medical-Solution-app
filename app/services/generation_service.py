@@ -16,18 +16,36 @@ SAFETY_SETTINGS = {
 
 async def generate_structured_text(
     section_name: str, 
-    extracted_text: str, 
-    physician_notes: str,
+    raw_input: str,  
+    previous_sections: Dict[str, str], 
+    physician_notes: str, 
     specialty: str,
     language: str = "English"
 ) -> str:
-    """Generates a structured paragraph for a given clinical section."""
+    """Generates a structured paragraph using cumulative context."""
     model = genai.GenerativeModel('gemini-2.5-pro')
     
     prompt_template = get_prompt_for_section(section_name)
     
-    full_context = f"..." 
-    final_prompt = prompt_template.format(language=language, context=full_context, specialty=specialty)
+    cumulative_context = ""
+    if previous_sections:
+        cumulative_context += "--- START OF PREVIOUSLY GENERATED SECTIONS ---\n"
+        for sec_name, sec_text in previous_sections.items():
+            cumulative_context += f"## {sec_name}:\n{sec_text}\n\n"
+        cumulative_context += "--- END OF PREVIOUSLY GENERATED SECTIONS ---\n\n"
+    
+    full_context = f"""
+    {cumulative_context}
+    --- START OF NEW INFORMATION FOR CURRENT SECTION ---
+    {raw_input}
+    --- END OF NEW INFORMATION FOR CURRENT SECTION ---
+    """
+    
+    final_prompt = prompt_template.format(
+        language=language,
+        context=full_context,
+        specialty=specialty
+    )
     
     response = await model.generate_content_async(
         final_prompt,
@@ -36,8 +54,7 @@ async def generate_structured_text(
     
     if response.parts:
         return response.text.strip()
-    else:
-        return "[AI response was blocked by content policies.]"
+    return "[AI response was blocked by content policies.]"
 
 async def generate_analysis_and_plan(
     previous_sections: Dict[str, str],

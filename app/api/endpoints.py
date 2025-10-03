@@ -3,7 +3,7 @@ from typing import List, Optional, Dict
 import json
 from pydantic import parse_obj_as
 import asyncio
-from app.api.models import GenerationWithTokenResponse, AnalysisPlanRequest, DocumentRequest
+from app.api.models import SectionGenerationRequest, GenerationWithTokenResponse, AnalysisPlanRequest, DocumentRequest
 from app.services import processing_service, generation_service, token_service
 from app.prompts import SectionName
 
@@ -49,31 +49,41 @@ async def process_files(files: List[UploadFile]) -> str:
 async def generate_section_endpoint(
     section_name: SectionName,
     files: List[UploadFile] = File(...),
-    physician_notes: Optional[str] = Form(""),
+    
+    request_data: str = Form(...), 
     language: str = Form(...),
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
+    if section_name == SectionName.ANALYSIS_AND_PLAN:
+        raise HTTPException(status_code=400, detail="Use the /generate_analysis_plan endpoint.")
+        
+    # Parse the JSON string into a SectionGenerationRequest object
+    try:
+        request_body = parse_obj_as(SectionGenerationRequest, json.loads(request_data))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON format for request_data.")
+
+    # Check for tokens
     has_tokens = await token_service.check_user_tokens(user_id=user_id)
     if not has_tokens:
-        raise HTTPException(
-            status_code=402,
-            detail="You have no tokens remaining"
-        )
+        raise HTTPException(status_code=402, detail="You have no tokens remaining.")
 
-    extracted_text = await process_files(files)
+    # Process the new files for this section
+    raw_input_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
+        previous_sections=request_body.previous_sections,
+        raw_input=raw_input_text,
         section_name=section_name.value,
-        extracted_text=extracted_text,
-        physician_notes=physician_notes,
+        # physician_notes are now inside request_body, but the new prompt doesn't use them.
+        # We'll pass an empty string for now.
+        physician_notes="", 
         language=language,
         specialty=specialty
     )
     
-    remaining_token = -1
-    if "[AI response was blocked" not in generated_text:
-        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
     
     return GenerationWithTokenResponse(
         section_name=section_name.value, 
@@ -120,34 +130,35 @@ async def quick_report_endpoint(
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
+    extracted_text = await process_files(files)
+
+    # --- TOKEN PRE-FLIGHT CHECK ---
     has_tokens = await token_service.check_user_tokens(user_id=user_id)
     if not has_tokens:
         raise HTTPException(
             status_code=402,
             detail="You have no tokens remaining"
         )
-   
-    extracted_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
         section_name=SectionName.QUICK_REPORT.value,
-        extracted_text=extracted_text,
+        raw_input=extracted_text, # Map 'extracted_text' to the 'raw_input' parameter
+        previous_sections={},     # A quick report has no previous sections
         physician_notes="", 
         language=language,
         specialty=specialty
+        # Note: The new generation_service doesn't need user_id, so we don't pass it.
     )
     
     remaining_token = -1
     if "[AI response was blocked" not in generated_text:
         remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
     
-    response = GenerationWithTokenResponse(
+    return GenerationWithTokenResponse(
         section_name=SectionName.QUICK_REPORT.value,
         generated_text=generated_text,
         remaining_token=remaining_token
     )
-    print(f"Quick report response: {response}")
-    return response
 
 # @router.post("/generate_document")
 # async def generate_docx_endpoint(request: DocumentRequest):
