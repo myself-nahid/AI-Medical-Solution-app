@@ -4,6 +4,8 @@ from fastapi import UploadFile
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import tempfile
 import os
+import io
+from PIL import Image
 
 from app.core.config import settings
 
@@ -58,7 +60,28 @@ async def process_pdf_or_image(file: UploadFile) -> str:
     try:
         file_bytes = await file.read()
         mime_type = file.content_type
-        
+        # --- START: IMAGE PRE-PROCESSING LOGIC ---
+        if "image" in mime_type and "svg" not in mime_type: 
+            try:
+                img = Image.open(io.BytesIO(file_bytes))
+                
+                MAX_SIZE = (2048, 2048)
+                
+                img.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
+                
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                
+                processed_bytes = buffer.getvalue()
+                
+                print(f"Image pre-processed: Original size: {len(file_bytes)} bytes -> New size: {len(processed_bytes)} bytes")
+                
+                file_bytes = processed_bytes
+                mime_type = "image/jpeg"
+
+            except Exception as img_error:
+                print(f"Could not pre-process image '{file.filename}'. Sending original. Error: {img_error}")
+        # --- END: IMAGE PRE-PROCESSING LOGIC ---
         file_data = {
             'mime_type': mime_type,
             'data': file_bytes
