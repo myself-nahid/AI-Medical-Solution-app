@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Depends
 from typing import List, Optional, Dict
 import json
 from pydantic import parse_obj_as
@@ -11,23 +11,31 @@ router = APIRouter()
 
 async def debug_and_log_form_data(request: Request):
     """
-    This is a dependency function that will run before the endpoint.
-    It will print the raw form data to the console for debugging.
+    This dependency runs before the endpoint logic. It intercepts the raw
+    request and prints its form data to the console for debugging.
     """
-    print("\n--- NEW REQUEST RECEIVED ---")
+    print("\n--- NEW REQUEST RECEIVED FOR DEBUGGING ---")
     try:
         form_data = await request.form()
-        print("Received form fields:")
+        
+        print("Received Form Fields and Files:")
+        if not form_data:
+            print("  - The form data is empty.")
+        
         for key in form_data.keys():
-            item = form_data.getlist(key)
-            if isinstance(item[0], UploadFile):
-                for file in item:
+            items = form_data.getlist(key)
+            if isinstance(items[0], UploadFile):
+                for file in items:
                     print(f"  - Key: '{key}', Filename: '{file.filename}', Content-Type: '{file.content_type}'")
             else:
-                print(f"  - Key: '{key}', Value: '{item[0]}'")
+                for value in items:
+                    print(f"  - Key: '{key}', Value: '{value}'")
+                    
     except Exception as e:
-        print(f"!!! Could not parse form data: {e} !!!")
-    print("--- END OF REQUEST DATA ---\n")
+        print(f"!!! ERROR PARSING FORM DATA: {e} !!!")
+        print("This might happen if the request is not 'multipart/form-data'.")
+        
+    print("--- END OF DEBUGGING LOG ---\n")
 
 async def process_single_file(file: UploadFile) -> str:
     if not file or not file.filename: return ""
@@ -45,7 +53,7 @@ async def process_files(files: List[UploadFile]) -> str:
     results = await asyncio.gather(*tasks)
     return "\n".join(filter(None, results))
 
-@router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse)
+@router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse, dependencies=[Depends(debug_and_log_form_data)])
 async def generate_section_endpoint(
     section_name: SectionName,
     files: List[UploadFile] = File(...),
