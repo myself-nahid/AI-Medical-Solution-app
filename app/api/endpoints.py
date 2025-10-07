@@ -3,7 +3,7 @@ from typing import List, Optional, Dict
 import json
 from pydantic import parse_obj_as
 import asyncio
-from app.api.models import SectionGenerationRequest, GenerationWithTokenResponse, AnalysisPlanRequest, DocumentRequest
+from app.api.models import GenerationRequestData, GenerationWithTokenResponse, DocumentRequest
 from app.services import processing_service, generation_service, token_service
 from app.prompts import SectionName
 
@@ -53,40 +53,34 @@ async def process_files(files: List[UploadFile]) -> str:
     results = await asyncio.gather(*tasks)
     return "\n".join(filter(None, results))
 
-@router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse, dependencies=[Depends(debug_and_log_form_data)])
+@router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse)
 async def generate_section_endpoint(
     section_name: SectionName,
     files: List[UploadFile] = File(...),
-    
-    request_data: str = Form(...), 
+    request_data: str = Form(...),
     language: str = Form(...),
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
     if section_name == SectionName.ANALYSIS_AND_PLAN:
-        raise HTTPException(status_code=400, detail="Use the /generate_analysis_plan endpoint.")
-        
-    # Parse the JSON string into a SectionGenerationRequest object
+        raise HTTPException(status_code=400, detail="Use the dedicated /generate_analysis_plan endpoint.")
+
     try:
-        request_body = parse_obj_as(SectionGenerationRequest, json.loads(request_data))
+        request_body = parse_obj_as(GenerationRequestData, json.loads(request_data))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON format for request_data.")
-
-    # Check for tokens
+        
     has_tokens = await token_service.check_user_tokens(user_id=user_id)
     if not has_tokens:
         raise HTTPException(status_code=402, detail="You have no tokens remaining.")
 
-    # Process the new files for this section
     raw_input_text = await process_files(files)
     
     generated_text = await generation_service.generate_structured_text(
         previous_sections=request_body.previous_sections,
         raw_input=raw_input_text,
         section_name=section_name.value,
-        # physician_notes are now inside request_body, but the new prompt doesn't use them.
-        # We'll pass an empty string for now.
-        physician_notes="", 
+        physician_notes=request_body.physician_notes, 
         language=language,
         specialty=specialty
     )
@@ -101,29 +95,32 @@ async def generate_section_endpoint(
 
 @router.post("/generate_analysis_plan", response_model=GenerationWithTokenResponse)
 async def generate_analysis_plan_endpoint(
+    files: List[UploadFile] = File(...),
     request_data: str = Form(...),
-    files: List[UploadFile] = File(...)
+    language: str = Form(...),
+    specialty: str = Form(...),
+    user_id: str = Form(...)
 ):
-    request_body = parse_obj_as(AnalysisPlanRequest, json.loads(request_data))
-    has_tokens = await token_service.check_user_tokens(user_id=request_body.user_id)
+    try:
+        request_body = parse_obj_as(GenerationRequestData, json.loads(request_data))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON format for request_data.")
+        
+    has_tokens = await token_service.check_user_tokens(user_id=user_id)
     if not has_tokens:
-        raise HTTPException(
-            status_code=402,
-            detail="You have no tokens remaining"
-        )
+        raise HTTPException(status_code=402, detail="You have no tokens remaining.")
+        
     analysis_plan_text = await process_files(files)
 
     generated_text = await generation_service.generate_analysis_and_plan(
         previous_sections=request_body.previous_sections,
         analysis_plan_text=analysis_plan_text,
         physician_notes=request_body.physician_notes,
-        language=request_body.language,
-        specialty=request_body.specialty
+        language=language,
+        specialty=specialty
     )
 
-    remaining_token = -1
-    if "[AI response was blocked" not in generated_text:
-        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=request_body.user_id, amount=5)
+    remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
     return GenerationWithTokenResponse(
         section_name=SectionName.ANALYSIS_AND_PLAN.value,
