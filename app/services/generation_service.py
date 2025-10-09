@@ -23,7 +23,7 @@ async def generate_structured_text(
     language: str = "English"
 ) -> str:
     """Generates a structured paragraph using cumulative context."""
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     
     prompt_template = get_prompt_for_section(section_name)
     
@@ -64,7 +64,7 @@ async def generate_analysis_and_plan(
     language: str = "English"
 ) -> str:
     """Generates the Analysis and Plan section using all previous context."""
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
     
     prompt_template = get_prompt_for_section("Analysis and Plan")
     
