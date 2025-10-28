@@ -40,21 +40,21 @@ async def check_user_tokens(user_id: str) -> bool:
             data = response_json.get("data", {})
 
             # Handle both response formats gracefully
-            token_balance = data.get("userToken")
+            # token_balance = data.get("userToken")
             has_token_flag = data.get("has_token")
 
-            if isinstance(token_balance, (int, float)):
-                has_tokens = token_balance > 0
-                print(f"Token balance found: {token_balance}. User has tokens: {has_tokens}")
-                return has_tokens
+            # if isinstance(token_balance, (int, float)):
+            #     has_tokens = token_balance > 0
+            #     print(f"Token balance found: {token_balance}. User has tokens: {has_tokens}")
+            #     return has_tokens
 
-            elif isinstance(has_token_flag, bool):
+            if isinstance(has_token_flag, bool):
                 print(f"Has_token flag found: {has_token_flag}")
                 return has_token_flag
 
-            else:
-                print("<-- Unexpected token response format. Defaulting to False.")
-                return False
+            # else:
+            #     print("<-- Unexpected token response format. Defaulting to False.")
+            #     return False
 
     except httpx.RequestError as e:
         print(f"Could not connect to token check API: {e}. Allowing request to proceed.")
