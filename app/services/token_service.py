@@ -7,16 +7,12 @@ CHECK_TOKEN_API_URL = settings.CHECK_TOKEN_API_URL
 
 async def check_user_tokens(user_id: str) -> bool:
     """
-    Checks if a user has tokens by calling the main backend.
-
-    Supports both:
-        - 'data.userToken' (numeric balance)
-        - 'data.has_token' (boolean flag)
+    Checks if a user has enough tokens by calling the main backend.
 
     Returns:
-        True  -> if user has tokens
-        False -> if user has no tokens
-        True  -> if API unreachable (so requests aren’t blocked)
+        True  -> if user has enough tokens
+        False -> if user does not have enough tokens
+        True  -> if API is unreachable (fails open)
     """
 
     if not CHECK_TOKEN_API_URL or not user_id:
@@ -39,35 +35,33 @@ async def check_user_tokens(user_id: str) -> bool:
 
             data = response_json.get("data", {})
 
-            # Handle both response formats gracefully
-            # token_balance = data.get("userToken")
+            # The backend now returns only "has_token"
             has_token_flag = data.get("has_token")
-
-            # if isinstance(token_balance, (int, float)):
-            #     has_tokens = token_balance > 0
-            #     print(f"Token balance found: {token_balance}. User has tokens: {has_tokens}")
-            #     return has_tokens
 
             if isinstance(has_token_flag, bool):
                 print(f"Has_token flag found: {has_token_flag}")
                 return has_token_flag
 
-            # else:
-            #     print("<-- Unexpected token response format. Defaulting to False.")
-            #     return False
+            print("<-- Unexpected token response format. Defaulting to False.")
+            return False
 
     except httpx.RequestError as e:
         print(f"Could not connect to token check API: {e}. Allowing request to proceed.")
         return True
 
 
+
 async def report_and_get_remaining_tokens(user_id: str, amount: int) -> int:
     """
     Reports token usage to the main backend and returns the remaining token count.
 
+    Backend may reject the request with:
+        "Error: User don't have enough token."
+
     Returns:
         int  -> remaining token count if successful
-        -1   -> if operation fails or API returns an error
+        -1   -> for general failure
+        -2   -> if user doesn't have enough tokens
     """
 
     if not TOKEN_API_URL or not user_id or amount <= 0:
@@ -89,17 +83,17 @@ async def report_and_get_remaining_tokens(user_id: str, amount: int) -> int:
                 print(f"Token API Response Body (not JSON): {response.text}")
                 return -1
 
-            # Check for success and remaining token info
+            # Handle success
             if response.status_code == 200 and response_json.get("success", False):
                 remaining = response_json.get("remaining_token", -1)
                 print(f"<-- Token deduction successful. Remaining tokens: {remaining}")
                 return remaining
 
-            # Handle specific backend error cases
+            # Handle insufficient tokens (backend message)
             message = response_json.get("message", "").lower()
             if "don't have enough token" in message:
-                print("<-- Token deduction failed: insufficient tokens.")
-                return -1
+                print(f"<-- Token deduction failed: user {user_id} doesn't have enough tokens for {amount}.")
+                return -2  # distinct code for insufficient balance
 
             print("<-- Token deduction failed: unexpected response.")
             return -1
