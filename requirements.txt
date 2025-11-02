@@ -28,4 +28,6 @@ python-dotenv
 python-multipart
 
 # handling audio data
-ffmpeg
+# ffmpeg
+
+pillow-heif

@@ -38,14 +38,13 @@ async def debug_and_log_form_data(request: Request):
     print("--- END OF DEBUGGING LOG ---\n")
 
 async def process_single_file(file: UploadFile) -> str:
-    if not file or not file.filename: return ""
-    content_type = file.content_type
-    text = ""
-    if "audio" in content_type: text = await processing_service.process_audio(file)
-    elif "image" in content_type or "pdf" in content_type: text = await processing_service.process_pdf_or_image(file)
-    else:
-        try: text = (await file.read()).decode('utf-8')
-        except: text = "[Unsupported file type]"
+    """Helper function to process one file using the unified Gemini service."""
+    if not file or not file.filename:
+        return ""
+    
+    # All supported file types (audio, image, pdf) are now handled by one function.
+    text = await processing_service.process_file_with_gemini(file)
+            
     return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
 
 async def process_files(files: List[UploadFile]) -> str:

@@ -1,93 +1,67 @@
-import whisper
 import google.generativeai as genai
 from fastapi import UploadFile
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-import tempfile
-import os
 import io
 from PIL import Image
+import pillow_heif
 
 from app.core.config import settings
 
+# --- Configuration ---
 genai.configure(api_key=settings.GOOGLE_API_KEY)
 
 
-try:
-    whisper_model = whisper.load_model("base")
-except Exception as e:
-    print("--- WHISPER MODEL LOADING ERROR ---")
-    print(f"Error: {e}")
-    print("This might be due to a missing FFmpeg installation or network issues.")
-    print("Please ensure FFmpeg is installed and accessible in your system's PATH.")
-    print("Application will continue to run, but audio processing will be disabled.")
-    print("-----------------------------------")
-    whisper_model = None
+# --- Unified Processing Service ---
 
-
-async def process_audio(file: UploadFile) -> str:
+async def process_file_with_gemini(file: UploadFile) -> str:
     """
-    Transcribes an audio file to text using Whisper in a robust, cross-platform manner.
-    This function creates a temporary file on disk because the Whisper library requires
-    a file path to operate, primarily due to its dependency on FFmpeg.
-    """
-    if not whisper_model:
-        return "[Error: Whisper model could not be loaded. Please check the server logs for details.]"
-
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-            temp_path = temp_file.name
-
-        result = whisper_model.transcribe(temp_path, fp16=False)
-        
-        return result.get("text", f"[Transcription for {file.filename} resulted in empty text.]")
-
-    except Exception as e:
-        print(f"Error during audio transcription for file '{file.filename}': {e}")
-        return f"[An error occurred while processing the audio file: {file.filename}]"
-    
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-async def process_pdf_or_image(file: UploadFile) -> str:
-    """
-    Extracts text and descriptions from images or PDFs using Google's Gemini model.
-    This version includes crucial safety settings to allow for medical imagery.
+    Processes any supported file (audio, image, PDF) using the Gemini 1.5 API.
+    This function handles transcription for audio and analysis for visual media.
+    It also includes pre-processing for HEIC and other large images.
     """
     try:
         file_bytes = await file.read()
         mime_type = file.content_type
-        # --- START: IMAGE PRE-PROCESSING LOGIC ---
-        if "image" in mime_type and "svg" not in mime_type: 
+        filename = file.filename.lower()
+
+        # --- Pre-processing for HEIC images ---
+        if filename.endswith(('.heic', '.heif')):
+            try:
+                pillow_heif.register_heif_opener()
+                image = Image.open(io.BytesIO(file_bytes))
+                jpeg_buffer = io.BytesIO()
+                image.save(jpeg_buffer, format="JPEG")
+                file_bytes = jpeg_buffer.getvalue()
+                mime_type = 'image/jpeg'
+                print(f"Successfully converted HEIC file '{file.filename}' to JPEG.")
+            except Exception as heic_error:
+                print(f"Could not convert HEIC file '{file.filename}'. Error: {heic_error}")
+                return f'The file "{file.filename}" is in HEIC format and could not be converted.'
+        
+        # --- Pre-processing for other large images (resizing) ---
+        elif "image" in mime_type and "svg" not in mime_type:
             try:
                 img = Image.open(io.BytesIO(file_bytes))
-                
                 MAX_SIZE = (2048, 2048)
-                
                 img.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
-                
                 buffer = io.BytesIO()
                 img.save(buffer, format="JPEG", quality=85)
-                
                 processed_bytes = buffer.getvalue()
-                
-                print(f"Image pre-processed: Original size: {len(file_bytes)} bytes -> New size: {len(processed_bytes)} bytes")
-                
-                file_bytes = processed_bytes
-                mime_type = "image/jpeg"
-
+                if len(processed_bytes) < len(file_bytes):
+                    print(f"Image pre-processed: Original size: {len(file_bytes)} bytes -> New size: {len(processed_bytes)} bytes")
+                    file_bytes = processed_bytes
+                    mime_type = "image/jpeg"
             except Exception as img_error:
-                print(f"Could not pre-process image '{file.filename}'. Sending original. Error: {img_error}")
-        # --- END: IMAGE PRE-PROCESSING LOGIC ---
+                print(f"Could not resize image '{file.filename}'. Sending original. Error: {img_error}")
+
+        # --- Prepare the file for the Gemini API ---
         file_data = {
             'mime_type': mime_type,
             'data': file_bytes
         }
         
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
+        
         safety_settings = {
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -95,22 +69,23 @@ async def process_pdf_or_image(file: UploadFile) -> str:
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
         
-        prompt = """
-        You are an expert medical data processor. Analyze the content of the provided file.
-
-        - If it is a photograph (e.g., a wound, a skin lesion, a physical finding):
-          Provide a detailed, objective, and clinical description. Do NOT diagnose or interpret.
-          Focus on observable characteristics like size, shape, color, texture, and surrounding tissue.
-        """
+        # --- Use a dynamic prompt based on file type ---
+        if "audio" in mime_type:
+            prompt = "Transcribe the following audio. Provide a clean, verbatim transcription of the speech."
+        else: # For images and PDFs
+            prompt = """
+            You are an expert medical data processor. Analyze the content of the provided file.
+            - If it is a document (PDF, or text on an image), extract all relevant text verbatim.
+            - If it is a photograph (e.g., a wound), provide a detailed, objective, clinical description.
+            """
         
         response = await model.generate_content_async(
             [prompt, file_data],
             safety_settings=safety_settings
         )
-        
+
         if not response.parts:
             finish_reason = response.candidates[0].finish_reason if response.candidates else 'UNKNOWN'
-            print(f"Gemini response blocked. Finish Reason: {finish_reason}")
             return f"[AI response was blocked by content policies. Finish Reason: {finish_reason}]"
             
         return response.text.strip()
