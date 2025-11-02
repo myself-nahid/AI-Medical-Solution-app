@@ -6,7 +6,7 @@ uvicorn[standard]
 
 # LLM and AI Services
 google-generativeai         # For Gemini 1.5 Pro
-openai-whisper              # For audio transcription (or use the API)
+# openai-whisper              # For audio transcription (or use the API)
 
 # File Processing
 pypdf                       # For extracting text from PDFs
