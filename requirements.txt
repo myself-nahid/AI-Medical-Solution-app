@@ -31,3 +31,6 @@ python-multipart
 # ffmpeg
 
 pillow-heif
+python-magic
+python-magic-bin
+PyMuPDF
