@@ -2,35 +2,24 @@
 fastapi
 uvicorn[standard]
 
-# Pydantic for data validation (comes with FastAPI)
+# AI Services
+openai
 
-# LLM and AI Services
-google-generativeai         # For Gemini 1.5 Pro
-# openai-whisper              # For audio transcription (or use the API)
-
-# File Processing
-pypdf                       # For extracting text from PDFs
-Pillow                      # For basic image handling
-python-magic                # To identify file types easily
+# File Processing & Image Handling
+PyMuPDF
+Pillow
+pillow-heif
+python-magic
 
 # Document Generation
-python-docx                 # To create the final .docx report
+python-docx
 
-# Testing
-pytest
-httpx                       # For making requests in tests
-requests
+# HTTP Client for making requests (token API, etc.)
+httpx
 
 # Environment variables
 python-dotenv
 
-# handling multipart/form-data
-python-multipart
-
-# handling audio data
-# ffmpeg
-
-pillow-heif
-python-magic
-# python-magic-bin
-PyMuPDF
+# --- Testing Libraries (Optional but Recommended) ---
+pytest
+pytest-asyncio

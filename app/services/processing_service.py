@@ -1,29 +1,37 @@
-import google.generativeai as genai
+from openai import AsyncOpenAI
 from fastapi import UploadFile
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+import base64
 import io
 from PIL import Image
 import pillow_heif
-import magic  # Library for detecting file types from content
-import fitz   # PyMuPDF library for fast PDF processing
+import magic
+import fitz
 
 from app.core.config import settings
 
 # --- Configuration ---
-genai.configure(api_key=settings.GOOGLE_API_KEY)
+# Initialize the AsyncOpenAI client once and reuse it across all functions.
+# This is efficient and a best practice.
+try:
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+except Exception as e:
+    print(f"--- FATAL: FAILED TO INITIALIZE OPENAI CLIENT ---")
+    print(f"Error: {e}")
+    print("Please ensure the OPENAI_API_KEY is set correctly in your .env file.")
+    client = None
 
 
-# --- START: New, Fast PDF Processing Function ---
+# --- Fast, Local PDF Processing ---
 def process_pdf_locally(file_bytes: bytes) -> str:
     """
     Extracts text from a PDF's bytes using the fast PyMuPDF (fitz) library.
-    This runs locally and is much faster than sending a PDF to an AI for OCR.
+    This runs locally on the server and does not require an AI API call.
     """
     try:
         text = ""
-        # Open the PDF from the in-memory byte stream
+        # Open the PDF from the in-memory byte stream.
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            # Iterate through each page and extract its text
+            # Iterate through each page and extract its text.
             for page in doc:
                 text += page.get_text()
         print("Successfully extracted text from PDF locally.")
@@ -31,92 +39,91 @@ def process_pdf_locally(file_bytes: bytes) -> str:
     except Exception as e:
         print(f"Error processing PDF locally with PyMuPDF: {e}")
         return "[Error extracting text from PDF document.]"
-# --- END: New, Fast PDF Processing Function ---
 
 
-async def process_file_with_gemini(file: UploadFile) -> str:
-    """
-    Processes uploaded files by routing PDFs to a fast local extractor and
-    sending audio/image files to the Gemini 2.5 API for analysis.
-    """
+# --- Audio Processing with OpenAI Whisper API ---
+async def process_audio_with_api(file: UploadFile) -> str:
+    """Transcribes audio using the fast, GPU-powered OpenAI Whisper API."""
+    if not client:
+        return "[Error: OpenAI Client not initialized. Audio transcription failed.]"
+    try:
+        # The OpenAI library can efficiently handle the file-like object directly.
+        # It streams the upload, which is good for larger files.
+        transcription = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=(file.filename, await file.read(), file.content_type)
+        )
+        print(f"Successfully transcribed audio file '{file.filename}' via API.")
+        return transcription.text
+    except Exception as e:
+        print(f"Error during OpenAI Whisper API transcription for '{file.filename}': {e}")
+        return f"[Error during audio transcription API call for {file.filename}.]"
+
+
+# --- Image Processing with OpenAI gpt-4o Vision Model ---
+async def process_image_with_api(file: UploadFile) -> str:
+    """Analyzes an image using the OpenAI gpt-4o model after pre-processing."""
+    if not client:
+        return "[Error: OpenAI Client not initialized. Image analysis failed.]"
     try:
         file_bytes = await file.read()
-        
-        # --- START: SERVER-SIDE FILE TYPE VALIDATION ---
-        # Use python-magic to detect the actual MIME type from the file's content.
-        # This is more reliable than trusting the Content-Type header from the client.
-        detected_mime_type = magic.from_buffer(file_bytes, mime=True)
-        print(f"File '{file.filename}' received. Client-sent Content-Type: '{file.content_type}', Server-detected MIME Type: '{detected_mime_type}'")
-        
-        # --- START: Smart Routing Logic ---
-        # If the file is a PDF, use the new fast local processor and return early.
-        if 'pdf' in detected_mime_type:
-            return process_pdf_locally(file_bytes)
-        # --- END: Smart Routing Logic ---
-
-        # If it's not a PDF, continue with pre-processing and Gemini API call.
-        mime_type = detected_mime_type
         filename = file.filename.lower()
+        mime_type = magic.from_buffer(file_bytes, mime=True)
 
-        # Pre-processing for HEIC images
+        # --- Image Pre-processing Logic ---
+        # Convert HEIC files to JPEG first, as they are not widely supported by APIs.
         if filename.endswith(('.heic', '.heif')) or "heic" in mime_type or "heif" in mime_type:
             try:
                 pillow_heif.register_heif_opener()
                 image = Image.open(io.BytesIO(file_bytes))
-                jpeg_buffer = io.BytesIO()
-                image.save(jpeg_buffer, format="JPEG")
-                file_bytes = jpeg_buffer.getvalue()
-                mime_type = 'image/jpeg'
-                print(f"Successfully converted HEIC file '{file.filename}' to JPEG.")
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG")
+                file_bytes = buffer.getvalue()
+                print(f"Successfully converted HEIC file '{filename}' to JPEG.")
             except Exception as heic_error:
-                print(f"Could not convert HEIC file '{file.filename}'. Error: {heic_error}")
-                return f'[File Conversion Error: The file "{file.filename}" is in HEIC format and could not be converted.]'
-        
-        # Pre-processing for other large images (resizing)
+                print(f"Could not convert HEIC file '{filename}': {heic_error}")
+                return f"[File Conversion Error: The HEIC file '{filename}' may be corrupt.]"
+
+        # Resize other large images to speed up uploads and reduce costs.
         elif "image" in mime_type and "svg" not in mime_type:
             try:
                 img = Image.open(io.BytesIO(file_bytes))
                 MAX_SIZE = (2048, 2048)
                 img.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
                 buffer = io.BytesIO()
+                # Saving as JPEG with quality settings ensures a small file size.
                 img.save(buffer, format="JPEG", quality=85)
                 processed_bytes = buffer.getvalue()
                 if len(processed_bytes) < len(file_bytes):
                     print(f"Image pre-processed: Original size: {len(file_bytes)} bytes -> New size: {len(processed_bytes)} bytes")
                     file_bytes = processed_bytes
-                    mime_type = "image/jpeg"
             except Exception as img_error:
-                print(f"Could not resize image '{file.filename}'. Sending original. Error: {img_error}")
+                print(f"Could not resize image '{filename}'. Sending original. Error: {img_error}")
 
-        # --- Prepare the file for the Gemini API ---
-        file_data = { 'mime_type': mime_type, 'data': file_bytes }
+        # Encode the final, processed image bytes to a base64 string for the API call.
+        base64_image = base64.b64encode(file_bytes).decode('utf-8')
         
-        model = genai.GenerativeModel('gemini-2.5-flash-lite') 
+        prompt = "You are an expert medical data processor. Provide a detailed, objective, and clinical description of the provided image (e.g., a wound, a skin lesion). Do NOT diagnose or interpret. Focus on observable characteristics like size, shape, color, texture, and surrounding tissue."
         
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
+        response = await client.chat.completions.create(
+            model="gpt-4o", # gpt-4o is excellent and cost-effective for vision tasks.
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1024 # A generous limit for a detailed description.
+        )
+        print(f"Successfully analyzed image '{file.filename}' with gpt-4o.")
+        return response.choices[0].message.content
         
-        # Dynamic prompt based on file type (now only for non-PDFs)
-        if "audio" in mime_type:
-            prompt = "Transcribe the following audio. Provide a clean, verbatim transcription of the speech. Remove filler words like 'um' and 'uh'."
-        elif "image" in mime_type:
-            prompt = "You are an expert medical data processor. Provide a detailed, objective, and clinical description of the provided image (e.g., a wound, a skin lesion). Do NOT diagnose or interpret."
-        else:
-            return f"[Unsupported File Type Error: The file format '{mime_type}' is not supported for processing.]"
-        
-        # Call the Gemini API
-        response = await model.generate_content_async([prompt, file_data], safety_settings=safety_settings)
-
-        if not response.parts:
-            finish_reason = response.candidates[0].finish_reason if response.candidates else 'UNKNOWN'
-            return f"[AI_PROCESSING_ERROR]: AI response was blocked by content policies. Finish Reason: {finish_reason}"
-            
-        return response.text.strip()
-
     except Exception as e:
-        print(f"Error during file processing for file '{file.filename}': {e}")
-        return f"[AI_PROCESSING_ERROR]: An unexpected error occurred while processing the file: {file.filename}"
+        print(f"Error during OpenAI image processing for '{file.filename}': {e}")
+        return f"[An AI processing error occurred for the image file: {file.filename}.]"

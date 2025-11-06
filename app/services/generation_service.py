@@ -1,30 +1,23 @@
-import google.generativeai as genai
+# app/services/generation_service.py
+
+from openai import AsyncOpenAI
 from typing import Dict
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 from app.core.config import settings
 from app.prompts import get_prompt_for_section
 
-genai.configure(api_key=settings.GOOGLE_API_KEY)
-
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-}
+# Initialize the AsyncOpenAI client
+client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 async def generate_structured_text(
     section_name: str, 
-    raw_input: str,  
-    previous_sections: Dict[str, str], 
+    raw_input: str,
+    previous_sections: Dict[str, str],
     physician_notes: str, 
     specialty: str,
     language: str = "English"
 ) -> str:
-    """Generates a structured paragraph using cumulative context."""
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
-    
+    """Generates a structured paragraph using an OpenAI chat model."""
     prompt_template = get_prompt_for_section(section_name)
     
     cumulative_context = ""
@@ -34,12 +27,7 @@ async def generate_structured_text(
             cumulative_context += f"## {sec_name}:\n{sec_text}\n\n"
         cumulative_context += "--- END OF PREVIOUSLY GENERATED SECTIONS ---\n\n"
     
-    full_context = f"""
-    {cumulative_context}
-    --- START OF NEW INFORMATION FOR CURRENT SECTION ---
-    {raw_input}
-    --- END OF NEW INFORMATION FOR CURRENT SECTION ---
-    """
+    full_context = f"{cumulative_context}--- START OF NEW INFORMATION ---\n{raw_input}"
     
     final_prompt = prompt_template.format(
         language=language,
@@ -47,14 +35,16 @@ async def generate_structured_text(
         specialty=specialty
     )
     
-    response = await model.generate_content_async(
-        final_prompt,
-        safety_settings=SAFETY_SETTINGS
-    )
-    
-    if response.parts:
-        return response.text.strip()
-    return "[AI response was blocked by content policies.]"
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-3.5-turbo", # Use fast, cost-effective model for this
+            messages=[{"role": "user", "content": final_prompt}]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error during OpenAI text generation for section '{section_name}': {e}")
+        return "[AI text generation failed.]"
+
 
 async def generate_analysis_and_plan(
     previous_sections: Dict[str, str],
@@ -63,21 +53,25 @@ async def generate_analysis_and_plan(
     specialty: str,
     language: str = "English"
 ) -> str:
-    """Generates the Analysis and Plan section using all previous context."""
-    model = genai.GenerativeModel('gemini-2.5-flash-lite')
-    
+    """Generates the Analysis and Plan section using the powerful gpt-4o model."""
     prompt_template = get_prompt_for_section("Analysis and Plan")
     
     previous_context = "\n\n".join(f"## {section}:\n{summary}" for section, summary in previous_sections.items())
-    current_context = f"..." 
-    final_prompt = prompt_template.format(language=language, previous_summaries=previous_context, current_section_context=current_context, specialty=specialty)
+    current_context = f"--- START OF NEW INFORMATION ---\n{analysis_plan_text}"
 
-    response = await model.generate_content_async(
-        final_prompt,
-        safety_settings=SAFETY_SETTINGS
+    final_prompt = prompt_template.format(
+        language=language,
+        previous_summaries=previous_context,
+        current_section_context=current_context,
+        specialty=specialty
     )
-
-    if response.parts:
-        return response.text.strip()
-    else:
-        return "[AI response was blocked by content policies.]"
+    
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o", # Use powerful model for the final reasoning step
+            messages=[{"role": "user", "content": final_prompt}]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error during OpenAI analysis and plan generation: {e}")
+        return "[AI analysis and plan generation failed.]"

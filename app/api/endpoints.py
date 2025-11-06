@@ -1,56 +1,52 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import List, Optional, Dict
 import json
 from pydantic import parse_obj_as
 import asyncio
+import io
+from docx import Document
+import magic
+
 from app.api.models import GenerationRequestData, GenerationWithTokenResponse, DocumentRequest
 from app.services import processing_service, generation_service, token_service
 from app.prompts import SectionName
 
 router = APIRouter()
 
-async def debug_and_log_form_data(request: Request):
-    """
-    This dependency runs before the endpoint logic. It intercepts the raw
-    request and prints its form data to the console for debugging.
-    """
-    print("\n--- NEW REQUEST RECEIVED FOR DEBUGGING ---")
-    try:
-        form_data = await request.form()
-        
-        print("Received Form Fields and Files:")
-        if not form_data:
-            print("  - The form data is empty.")
-        
-        for key in form_data.keys():
-            items = form_data.getlist(key)
-            if isinstance(items[0], UploadFile):
-                for file in items:
-                    print(f"  - Key: '{key}', Filename: '{file.filename}', Content-Type: '{file.content_type}'")
-            else:
-                for value in items:
-                    print(f"  - Key: '{key}', Value: '{value}'")
-                    
-    except Exception as e:
-        print(f"!!! ERROR PARSING FORM DATA: {e} !!!")
-        print("This might happen if the request is not 'multipart/form-data'.")
-        
-    print("--- END OF DEBUGGING LOG ---\n")
 
+# --- File Processing Helpers (Unchanged) ---
 async def process_single_file(file: UploadFile) -> str:
-    """Helper function to process one file using the unified Gemini service."""
+    """Helper function to process one file by routing it to the correct service."""
     if not file or not file.filename:
         return ""
     
-    # All supported file types (audio, image, pdf) are now handled by one function.
-    text = await processing_service.process_file_with_gemini(file)
+    file_bytes = await file.read()
+    await file.seek(0)
+    
+    mime_type = magic.from_buffer(file_bytes, mime=True)
+    
+    text = ""
+    if "audio" in mime_type:
+        text = await processing_service.process_audio_with_api(file)
+    elif "pdf" in mime_type:
+        text = processing_service.process_pdf_locally(file_bytes)
+    elif "image" in mime_type or file.filename.lower().endswith(('.heic', '.heif')):
+        text = await processing_service.process_image_with_api(file)
+    else:
+        text = f"[Unsupported file type: {mime_type}]"
             
     return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
 
 async def process_files(files: List[UploadFile]) -> str:
+    """Processes a list of uploaded files in parallel."""
+    if not files:
+        return ""
     tasks = [process_single_file(file) for file in files]
     results = await asyncio.gather(*tasks)
     return "\n".join(filter(None, results))
+
+
+# --- API Endpoints (Updated with Parallel Logic) ---
 
 @router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse)
 async def generate_section_endpoint(
@@ -75,7 +71,9 @@ async def generate_section_endpoint(
 
     raw_input_text = await process_files(files)
     
-    generated_text = await generation_service.generate_structured_text(
+    # --- START: PARALLEL EXECUTION ---
+    # Create two tasks that can run concurrently
+    generation_task = generation_service.generate_structured_text(
         previous_sections=request_body.previous_sections,
         raw_input=raw_input_text,
         section_name=section_name.value,
@@ -83,8 +81,14 @@ async def generate_section_endpoint(
         language=language,
         specialty=specialty
     )
+    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+
+    # Run both tasks at the same time and wait for both to complete
+    results = await asyncio.gather(generation_task, token_reporting_task)
     
-    remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    generated_text = results[0]
+    remaining_token = results[1]
+    # --- END: PARALLEL EXECUTION ---
     
     return GenerationWithTokenResponse(
         section_name=section_name.value, 
@@ -111,15 +115,20 @@ async def generate_analysis_plan_endpoint(
         
     analysis_plan_text = await process_files(files)
 
-    generated_text = await generation_service.generate_analysis_and_plan(
+    # --- START: PARALLEL EXECUTION ---
+    generation_task = generation_service.generate_analysis_and_plan(
         previous_sections=request_body.previous_sections,
         analysis_plan_text=analysis_plan_text,
         physician_notes=request_body.physician_notes,
         language=language,
         specialty=specialty
     )
+    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
-    remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    results = await asyncio.gather(generation_task, token_reporting_task)
+    generated_text = results[0]
+    remaining_token = results[1]
+    # --- END: PARALLEL EXECUTION ---
 
     return GenerationWithTokenResponse(
         section_name=SectionName.ANALYSIS_AND_PLAN.value,
@@ -134,9 +143,6 @@ async def quick_report_endpoint(
     specialty: str = Form(...),
     user_id: str = Form(...)
 ):
-    extracted_text = await process_files(files)
-
-    # --- TOKEN PRE-FLIGHT CHECK ---
     has_tokens = await token_service.check_user_tokens(user_id=user_id)
     if not has_tokens:
         raise HTTPException(
@@ -144,19 +150,23 @@ async def quick_report_endpoint(
             detail="You have no tokens remaining"
         )
     
-    generated_text = await generation_service.generate_structured_text(
+    extracted_text = await process_files(files)
+    
+    # --- START: PARALLEL EXECUTION ---
+    generation_task = generation_service.generate_structured_text(
         section_name=SectionName.QUICK_REPORT.value,
-        raw_input=extracted_text, # Map 'extracted_text' to the 'raw_input' parameter
-        previous_sections={},     # A quick report has no previous sections
+        raw_input=extracted_text,
+        previous_sections={},
         physician_notes="", 
         language=language,
         specialty=specialty
-        # Note: The new generation_service doesn't need user_id, so we don't pass it.
     )
-    
-    remaining_token = -1
-    if "[AI response was blocked" not in generated_text:
-        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+
+    results = await asyncio.gather(generation_task, token_reporting_task)
+    generated_text = results[0]
+    remaining_token = results[1]
+    # --- END: PARALLEL EXECUTION ---
     
     return GenerationWithTokenResponse(
         section_name=SectionName.QUICK_REPORT.value,
@@ -168,11 +178,11 @@ async def quick_report_endpoint(
 # async def generate_docx_endpoint(request: DocumentRequest):
 #     """
 #     Takes all generated section texts and creates a .docx file for download.
+#     This does not cost tokens and is not parallelized.
 #     """
 #     document = Document()
 #     document.add_heading('Clinical Note', level=1)
     
-#     # Ensure sections are in the correct order
 #     section_order = [
 #         SectionName.PRESENT_ILLNESS, SectionName.PAST_MEDICAL_HISTORY,
 #         SectionName.PHYSICAL_EXAM, SectionName.LABS_AND_IMAGING,
@@ -183,9 +193,8 @@ async def quick_report_endpoint(
 #         if section_enum in request.sections:
 #             document.add_heading(section_enum.value, level=2)
 #             document.add_paragraph(request.sections[section_enum])
-#             document.add_paragraph() # Add a space between sections
+#             document.add_paragraph()
             
-#     # Save document to an in-memory stream
 #     file_stream = io.BytesIO()
 #     document.save(file_stream)
 #     file_stream.seek(0)
