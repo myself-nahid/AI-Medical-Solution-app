@@ -6,107 +6,135 @@ from PIL import Image
 import pillow_heif
 import magic
 import fitz
+import hashlib
+from functools import lru_cache
+from typing import Optional
 
 from app.core.config import settings
 
-# --- Configuration ---
-# Initialize the AsyncOpenAI client once and reuse it across all functions.
-# This is efficient and a best practice.
+# Initialize client
 try:
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 except Exception as e:
     print(f"--- FATAL: FAILED TO INITIALIZE OPENAI CLIENT ---")
     print(f"Error: {e}")
-    print("Please ensure the OPENAI_API_KEY is set correctly in your .env file.")
     client = None
 
+# Simple in-memory cache for processed files (use Redis in production)
+_file_cache = {}
+MAX_CACHE_SIZE = 100
 
-# --- Fast, Local PDF Processing ---
+def get_file_hash(file_bytes: bytes) -> str:
+    """Generate a hash for file content to use as cache key"""
+    return hashlib.md5(file_bytes).hexdigest()
+
+def cache_result(file_hash: str, result: str):
+    """Store result in cache with size limit"""
+    if len(_file_cache) >= MAX_CACHE_SIZE:
+        # Remove oldest entry (simple FIFO)
+        _file_cache.pop(next(iter(_file_cache)))
+    _file_cache[file_hash] = result
+
+def get_cached_result(file_hash: str) -> Optional[str]:
+    """Retrieve cached result if available"""
+    return _file_cache.get(file_hash)
+
+
+# --- OPTIMIZED: Fast, Local PDF Processing ---
 def process_pdf_locally(file_bytes: bytes) -> str:
-    """
-    Extracts text from a PDF's bytes using the fast PyMuPDF (fitz) library.
-    This runs locally on the server and does not require an AI API call.
-    """
+    """Extract text from PDF using PyMuPDF with caching"""
     try:
+        # Check cache first
+        file_hash = get_file_hash(file_bytes)
+        cached = get_cached_result(file_hash)
+        if cached:
+            print("PDF result retrieved from cache")
+            return cached
+        
         text = ""
-        # Open the PDF from the in-memory byte stream.
+        # Use context manager efficiently
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            # Iterate through each page and extract its text.
-            for page in doc:
-                text += page.get_text()
-        print("Successfully extracted text from PDF locally.")
-        return text.strip()
+            # Extract text from all pages at once (faster)
+            text = "\n".join(page.get_text() for page in doc)
+        
+        result = text.strip()
+        cache_result(file_hash, result)
+        print("Successfully extracted text from PDF locally")
+        return result
     except Exception as e:
-        print(f"Error processing PDF locally with PyMuPDF: {e}")
+        print(f"Error processing PDF: {e}")
         return "[Error extracting text from PDF document.]"
 
 
-# --- Audio Processing with OpenAI Whisper API ---
+# --- OPTIMIZED: Audio Processing with Caching ---
 async def process_audio_with_api(file: UploadFile) -> str:
-    """Transcribes audio using the fast, GPU-powered OpenAI Whisper API."""
+    """Transcribe audio with caching to avoid redundant API calls"""
     if not client:
-        return "[Error: OpenAI Client not initialized. Audio transcription failed.]"
+        return "[Error: OpenAI Client not initialized.]"
+    
     try:
-        # The OpenAI library can efficiently handle the file-like object directly.
-        # It streams the upload, which is good for larger files.
+        # Read file once
+        file_bytes = await file.read()
+        
+        # Check cache
+        file_hash = get_file_hash(file_bytes)
+        cached = get_cached_result(file_hash)
+        if cached:
+            print(f"Audio transcription retrieved from cache for '{file.filename}'")
+            return cached
+        
+        # Create file-like object from bytes
+        audio_file = io.BytesIO(file_bytes)
+        audio_file.name = file.filename
+        
+        # Transcribe with optimized settings
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
-            file=(file.filename, await file.read(), file.content_type)
+            file=audio_file,
+            response_format="text"  # Faster than JSON
         )
-        print(f"Successfully transcribed audio file '{file.filename}' via API.")
-        return transcription.text
+        
+        result = transcription if isinstance(transcription, str) else transcription.text
+        cache_result(file_hash, result)
+        print(f"Successfully transcribed audio file '{file.filename}'")
+        return result
+        
     except Exception as e:
-        print(f"Error during OpenAI Whisper API transcription for '{file.filename}': {e}")
-        return f"[Error during audio transcription API call for {file.filename}.]"
+        print(f"Error during audio transcription for '{file.filename}': {e}")
+        return f"[Error during audio transcription for {file.filename}.]"
 
 
-# --- Image Processing with OpenAI gpt-4o Vision Model ---
+# --- OPTIMIZED: Smart Image Processing ---
 async def process_image_with_api(file: UploadFile) -> str:
-    """Analyzes an image using the OpenAI gpt-4o model after pre-processing."""
+    """Analyze images with smart preprocessing and caching"""
     if not client:
-        return "[Error: OpenAI Client not initialized. Image analysis failed.]"
+        return "[Error: OpenAI Client not initialized.]"
+    
     try:
         file_bytes = await file.read()
         filename = file.filename.lower()
-        mime_type = magic.from_buffer(file_bytes, mime=True)
-
-        # --- Image Pre-processing Logic ---
-        # Convert HEIC files to JPEG first, as they are not widely supported by APIs.
-        if filename.endswith(('.heic', '.heif')) or "heic" in mime_type or "heif" in mime_type:
-            try:
-                pillow_heif.register_heif_opener()
-                image = Image.open(io.BytesIO(file_bytes))
-                buffer = io.BytesIO()
-                image.save(buffer, format="JPEG")
-                file_bytes = buffer.getvalue()
-                print(f"Successfully converted HEIC file '{filename}' to JPEG.")
-            except Exception as heic_error:
-                print(f"Could not convert HEIC file '{filename}': {heic_error}")
-                return f"[File Conversion Error: The HEIC file '{filename}' may be corrupt.]"
-
-        # Resize other large images to speed up uploads and reduce costs.
-        elif "image" in mime_type and "svg" not in mime_type:
-            try:
-                img = Image.open(io.BytesIO(file_bytes))
-                MAX_SIZE = (2048, 2048)
-                img.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
-                buffer = io.BytesIO()
-                # Saving as JPEG with quality settings ensures a small file size.
-                img.save(buffer, format="JPEG", quality=85)
-                processed_bytes = buffer.getvalue()
-                if len(processed_bytes) < len(file_bytes):
-                    print(f"Image pre-processed: Original size: {len(file_bytes)} bytes -> New size: {len(processed_bytes)} bytes")
-                    file_bytes = processed_bytes
-            except Exception as img_error:
-                print(f"Could not resize image '{filename}'. Sending original. Error: {img_error}")
-
-        # Encode the final, processed image bytes to a base64 string for the API call.
-        base64_image = base64.b64encode(file_bytes).decode('utf-8')
         
-        prompt = "You are an expert medical data processor. Provide a detailed, objective, and clinical description of the provided image (e.g., a wound, a skin lesion). Do NOT diagnose or interpret. Focus on observable characteristics like size, shape, color, texture, and surrounding tissue."
+        # Check cache before expensive processing
+        file_hash = get_file_hash(file_bytes)
+        cached = get_cached_result(file_hash)
+        if cached:
+            print(f"Image analysis retrieved from cache for '{file.filename}'")
+            return cached
+        
+        # Determine mime type once
+        mime_type = magic.from_buffer(file_bytes, mime=True)
+        
+        # --- Optimized Image Pre-processing ---
+        processed_bytes = await _optimize_image(file_bytes, filename, mime_type)
+        
+        # Encode to base64
+        base64_image = base64.b64encode(processed_bytes).decode('utf-8')
+        
+        # Shortened prompt for faster processing
+        prompt = "Provide a concise clinical description of this medical image focusing on observable characteristics."
         
         response = await client.chat.completions.create(
-            model="gpt-4o", # gpt-4o is excellent and cost-effective for vision tasks.
+            model="gpt-4o-mini",  # Faster and cheaper than gpt-4o
             messages=[
                 {
                     "role": "user",
@@ -114,16 +142,59 @@ async def process_image_with_api(file: UploadFile) -> str:
                         {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "low"  # Faster processing
+                            }
                         }
                     ]
                 }
             ],
-            max_tokens=1024 # A generous limit for a detailed description.
+            max_tokens=512  # Reduced for faster response
         )
-        print(f"Successfully analyzed image '{file.filename}' with gpt-4o.")
-        return response.choices[0].message.content
+        
+        result = response.choices[0].message.content
+        cache_result(file_hash, result)
+        print(f"Successfully analyzed image '{file.filename}'")
+        return result
         
     except Exception as e:
-        print(f"Error during OpenAI image processing for '{file.filename}': {e}")
-        return f"[An AI processing error occurred for the image file: {file.filename}.]"
+        print(f"Error during image processing for '{file.filename}': {e}")
+        return f"[Error processing image: {file.filename}]"
+
+
+async def _optimize_image(file_bytes: bytes, filename: str, mime_type: str) -> bytes:
+    """Optimize image size and format for API processing"""
+    try:
+        # Handle HEIC conversion
+        if filename.endswith(('.heic', '.heif')) or "heic" in mime_type or "heif" in mime_type:
+            pillow_heif.register_heif_opener()
+            image = Image.open(io.BytesIO(file_bytes))
+        elif "image" in mime_type and "svg" not in mime_type:
+            image = Image.open(io.BytesIO(file_bytes))
+        else:
+            return file_bytes  # Return original if not standard image
+        
+        # Aggressive resizing for faster uploads (1024x1024 max)
+        MAX_SIZE = (1024, 1024)
+        image.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
+        
+        # Convert to RGB if necessary (RGBA, P modes)
+        if image.mode not in ('RGB', 'L'):
+            image = image.convert('RGB')
+        
+        # Compress to JPEG with good quality/size balance
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=75, optimize=True)
+        optimized_bytes = buffer.getvalue()
+        
+        # Only use optimized version if it's actually smaller
+        if len(optimized_bytes) < len(file_bytes):
+            print(f"Image optimized: {len(file_bytes)} -> {len(optimized_bytes)} bytes")
+            return optimized_bytes
+        
+        return file_bytes
+        
+    except Exception as e:
+        print(f"Image optimization failed: {e}. Using original.")
+        return file_bytes
