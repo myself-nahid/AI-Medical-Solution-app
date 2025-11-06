@@ -14,72 +14,72 @@ from app.prompts import SectionName
 router = APIRouter()
 
 
-# --- FIXED: File Processing Helpers with Better Audio Detection ---
-# Also add this fix to processing_service.py for the audio function
+# In endpoints.py - Replace the ENTIRE file processing section
 
 async def process_single_file(file: UploadFile) -> str:
     """Helper function to process one file by routing it to the correct service."""
     if not file or not file.filename:
         return ""
     
+    # Read file bytes ONCE and pass them around
     file_bytes = await file.read()
+    
+    # Reset file pointer for any subsequent reads (defensive programming)
     await file.seek(0)
     
-    # Get filename in lowercase for extension checking
+    # Detect MIME type from bytes
+    try:
+        mime_type = magic.from_buffer(file_bytes, mime=True)
+    except Exception as e:
+        print(f"MIME detection failed for {file.filename}: {e}")
+        mime_type = "application/octet-stream"
+    
     filename_lower = file.filename.lower()
     
-    # Define audio extensions (including common video container formats used for audio)
-    audio_extensions = (
-        '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma',
-        '.opus', '.amr', '.mp4', '.webm', '.mpeg', '.mpga'
+    # Define common file extensions
+    AUDIO_EXTENSIONS = (
+        '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', 
+        '.opus', '.wma', '.aif', '.aiff', '.webm'
     )
     
-    # Define image extensions
-    image_extensions = (
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', 
-        '.heic', '.heif', '.tiff', '.tif'
+    IMAGE_EXTENSIONS = (
+        '.heic', '.heif', '.jpg', '.jpeg', '.png', 
+        '.gif', '.bmp', '.webp', '.tiff', '.tif'
     )
     
-    # Define PDF extension
-    pdf_extensions = ('.pdf',)
+    print(f"Processing file: {file.filename}, MIME: {mime_type}, Size: {len(file_bytes)} bytes")
     
     text = ""
     
-    # PRIORITY 1: Check file extension first (more reliable for audio)
-    if filename_lower.endswith(audio_extensions):
-        print(f"Processing as AUDIO based on extension: {file.filename}")
-        text = await processing_service.process_audio_with_api(file)
+    # Audio files - check BOTH MIME type AND extension
+    if "audio" in mime_type or filename_lower.endswith(AUDIO_EXTENSIONS):
+        # Special case: M4A files often detected as video/mp4
+        if filename_lower.endswith('.m4a') or mime_type in ['audio/mp4', 'audio/x-m4a']:
+            text = await processing_service.process_audio_with_api(file, file_bytes)
+        elif "audio" in mime_type or filename_lower.endswith(AUDIO_EXTENSIONS):
+            text = await processing_service.process_audio_with_api(file, file_bytes)
+        else:
+            text = f"[Unsupported audio format: {file.filename}]"
     
-    elif filename_lower.endswith(pdf_extensions):
-        print(f"Processing as PDF based on extension: {file.filename}")
+    # PDF files
+    elif "pdf" in mime_type or filename_lower.endswith('.pdf'):
         text = processing_service.process_pdf_locally(file_bytes)
     
-    elif filename_lower.endswith(image_extensions):
-        print(f"Processing as IMAGE based on extension: {file.filename}")
-        text = await processing_service.process_image_with_api(file)
+    # Image files - check BOTH MIME type AND extension
+    elif "image" in mime_type or filename_lower.endswith(IMAGE_EXTENSIONS):
+        text = await processing_service.process_image_with_api(file, file_bytes)
     
-    # FALLBACK: Use MIME type detection
+    # Video files with audio (some users might upload these)
+    elif "video" in mime_type and filename_lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.m4a')):
+        # M4A is technically a video container
+        if filename_lower.endswith('.m4a'):
+            text = await processing_service.process_audio_with_api(file, file_bytes)
+        else:
+            text = f"[Video files not supported. Please extract audio first: {file.filename}]"
+    
     else:
-        try:
-            mime_type = magic.from_buffer(file_bytes, mime=True)
-            print(f"File: {file.filename}, Detected MIME: {mime_type}")
-            
-            if "audio" in mime_type or "video" in mime_type:
-                # Treat video MIME types as audio for Whisper (it can handle them)
-                print(f"Processing as AUDIO based on MIME: {file.filename}")
-                text = await processing_service.process_audio_with_api(file)
-            elif "pdf" in mime_type:
-                print(f"Processing as PDF based on MIME: {file.filename}")
-                text = processing_service.process_pdf_locally(file_bytes)
-            elif "image" in mime_type:
-                print(f"Processing as IMAGE based on MIME: {file.filename}")
-                text = await processing_service.process_image_with_api(file)
-            else:
-                text = f"[Unsupported file type: {mime_type} for file {file.filename}]"
-        except Exception as e:
-            print(f"Error detecting MIME type for {file.filename}: {e}")
-            text = f"[Error processing file: {file.filename}]"
-            
+        text = f"[Unsupported file type: {mime_type} - {file.filename}]"
+    
     return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
 
 
@@ -87,9 +87,26 @@ async def process_files(files: List[UploadFile]) -> str:
     """Processes a list of uploaded files in parallel."""
     if not files:
         return ""
-    tasks = [process_single_file(file) for file in files]
-    results = await asyncio.gather(*tasks)
-    return "\n".join(filter(None, results))
+    
+    # Filter out empty files
+    valid_files = [f for f in files if f and f.filename]
+    
+    if not valid_files:
+        return ""
+    
+    tasks = [process_single_file(file) for file in valid_files]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Handle any exceptions in processing
+    processed_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            print(f"Error processing file {valid_files[i].filename}: {result}")
+            processed_results.append(f"[Error processing {valid_files[i].filename}]")
+        elif result:
+            processed_results.append(result)
+    
+    return "\n".join(processed_results)
 
 
 # --- API Endpoints (Updated with Parallel Logic) ---
@@ -118,6 +135,7 @@ async def generate_section_endpoint(
     raw_input_text = await process_files(files)
     
     # --- START: PARALLEL EXECUTION ---
+    # Create two tasks that can run concurrently
     generation_task = generation_service.generate_structured_text(
         previous_sections=request_body.previous_sections,
         raw_input=raw_input_text,
@@ -128,6 +146,7 @@ async def generate_section_endpoint(
     )
     token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
+    # Run both tasks at the same time and wait for both to complete
     results = await asyncio.gather(generation_task, token_reporting_task)
     
     generated_text = results[0]

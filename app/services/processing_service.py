@@ -48,7 +48,7 @@ def process_pdf_locally(file_bytes: bytes) -> str:
         file_hash = get_file_hash(file_bytes)
         cached = get_cached_result(file_hash)
         if cached:
-            print("PDF result retrieved from cache")
+            print("✓ PDF result retrieved from cache")
             return cached
         
         text = ""
@@ -59,42 +59,67 @@ def process_pdf_locally(file_bytes: bytes) -> str:
         
         result = text.strip()
         cache_result(file_hash, result)
-        print("Successfully extracted text from PDF locally")
+        print("✓ Successfully extracted text from PDF locally")
         return result
     except Exception as e:
-        print(f"Error processing PDF: {e}")
+        print(f"✗ Error processing PDF: {e}")
         return "[Error extracting text from PDF document.]"
 
 
-# --- FIXED: Audio Processing with Better File Handling ---
-async def process_audio_with_api(file: UploadFile) -> str:
-    """Transcribe audio with caching to avoid redundant API calls"""
+# --- OPTIMIZED: Audio Processing with Caching ---
+async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
+    """Transcribe audio with caching to avoid redundant API calls
+    
+    Args:
+        file: The UploadFile object (for filename metadata)
+        file_bytes: The actual file content as bytes (already read)
+    """
     if not client:
         return "[Error: OpenAI Client not initialized.]"
     
     try:
-        # Read file once
-        file_bytes = await file.read()
-        
-        # Check cache
+        # Check cache first
         file_hash = get_file_hash(file_bytes)
         cached = get_cached_result(file_hash)
         if cached:
-            print(f"Audio transcription retrieved from cache for '{file.filename}'")
+            print(f"✓ Audio transcription retrieved from cache for '{file.filename}'")
             return cached
         
-        # Create file-like object from bytes with proper extension
-        audio_file = io.BytesIO(file_bytes)
+        # Validate file size (Whisper API limit is 25MB)
+        MAX_SIZE = 25 * 1024 * 1024  # 25MB in bytes
+        if len(file_bytes) > MAX_SIZE:
+            error_msg = f"[Error: Audio file '{file.filename}' is too large ({len(file_bytes)/(1024*1024):.1f}MB). Maximum size is 25MB.]"
+            print(f"✗ {error_msg}")
+            return error_msg
         
-        # IMPORTANT: Whisper needs the correct file extension
-        # Extract extension from original filename
-        filename = file.filename if file.filename else "audio.m4a"
+        if len(file_bytes) == 0:
+            error_msg = f"[Error: Audio file '{file.filename}' is empty.]"
+            print(f"✗ {error_msg}")
+            return error_msg
+        
+        # Get filename and ensure it has a proper extension
+        filename = file.filename
+        filename_lower = filename.lower()
+        
+        # Whisper API supported formats
+        SUPPORTED_FORMATS = ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm', '.flac', '.ogg', '.opus']
+        
+        # Check if file has a supported extension
+        has_valid_ext = any(filename_lower.endswith(ext) for ext in SUPPORTED_FORMATS)
+        
+        if not has_valid_ext:
+            # Try to add appropriate extension based on content
+            # Default to .m4a for unknown audio types
+            filename = f"{filename}.m4a"
+            print(f"⚠ Added extension to filename: {filename}")
+        
+        # Create file-like object from bytes
+        audio_file = io.BytesIO(file_bytes)
         audio_file.name = filename
         
-        print(f"Sending audio file '{filename}' to Whisper API for transcription...")
+        print(f"→ Transcribing audio: {filename} ({len(file_bytes)/(1024):.1f}KB)")
         
-        # Transcribe with optimized settings
-        # Whisper API supports: mp3, mp4, mpeg, mpga, m4a, wav, webm
+        # Transcribe with Whisper API
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
@@ -102,49 +127,67 @@ async def process_audio_with_api(file: UploadFile) -> str:
         )
         
         result = transcription if isinstance(transcription, str) else transcription.text
+        result = result.strip()
         
-        if not result or result.strip() == "":
-            print(f"WARNING: Empty transcription received for '{filename}'")
-            result = "[Transcription returned empty. The audio file may be silent or corrupted.]"
+        if not result:
+            result = "[No speech detected in audio file.]"
+            print(f"⚠ No speech detected in '{file.filename}'")
+        else:
+            print(f"✓ Successfully transcribed '{file.filename}' ({len(result)} characters)")
         
         cache_result(file_hash, result)
-        print(f"Successfully transcribed audio file '{filename}' - Length: {len(result)} chars")
         return result
         
     except Exception as e:
         error_msg = str(e)
-        print(f"Error during audio transcription for '{file.filename}': {error_msg}")
+        print(f"✗ Error transcribing '{file.filename}': {error_msg}")
         
-        # Provide more helpful error messages
-        if "file type" in error_msg.lower() or "format" in error_msg.lower():
-            return f"[Error: Audio format not supported by Whisper API. Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm. File: {file.filename}]"
+        # Provide specific error messages
+        if "Invalid file format" in error_msg or "format" in error_msg.lower():
+            return f"[Error: Unsupported audio format for '{file.filename}'. Supported: MP3, M4A, WAV, FLAC, OGG, OPUS, WEBM]"
         elif "size" in error_msg.lower():
-            return f"[Error: Audio file too large. Maximum size is 25MB. File: {file.filename}]"
+            return f"[Error: Audio file '{file.filename}' exceeds 25MB limit.]"
+        elif "timeout" in error_msg.lower():
+            return f"[Error: Transcription timeout for '{file.filename}'. File may be too long.]"
         else:
-            return f"[Error during audio transcription for {file.filename}: {error_msg}]"
+            return f"[Error transcribing '{file.filename}': {error_msg}]"
 
 
 # --- OPTIMIZED: Smart Image Processing ---
-async def process_image_with_api(file: UploadFile) -> str:
-    """Analyze images with smart preprocessing and caching"""
+async def process_image_with_api(file: UploadFile, file_bytes: bytes) -> str:
+    """Analyze images with smart preprocessing and caching
+    
+    Args:
+        file: The UploadFile object (for filename metadata)
+        file_bytes: The actual file content as bytes (already read)
+    """
     if not client:
         return "[Error: OpenAI Client not initialized.]"
     
     try:
-        file_bytes = await file.read()
         filename = file.filename.lower()
         
         # Check cache before expensive processing
         file_hash = get_file_hash(file_bytes)
         cached = get_cached_result(file_hash)
         if cached:
-            print(f"Image analysis retrieved from cache for '{file.filename}'")
+            print(f"✓ Image analysis retrieved from cache for '{file.filename}'")
             return cached
         
-        # Determine mime type once
-        mime_type = magic.from_buffer(file_bytes, mime=True)
+        if len(file_bytes) == 0:
+            error_msg = f"[Error: Image file '{file.filename}' is empty.]"
+            print(f"✗ {error_msg}")
+            return error_msg
         
-        # --- Optimized Image Pre-processing ---
+        # Determine mime type
+        try:
+            mime_type = magic.from_buffer(file_bytes, mime=True)
+        except:
+            mime_type = "image/jpeg"  # Default fallback
+        
+        print(f"→ Analyzing image: {file.filename} ({len(file_bytes)/(1024):.1f}KB)")
+        
+        # Optimize image
         processed_bytes = await _optimize_image(file_bytes, filename, mime_type)
         
         # Encode to base64
@@ -175,11 +218,11 @@ async def process_image_with_api(file: UploadFile) -> str:
         
         result = response.choices[0].message.content
         cache_result(file_hash, result)
-        print(f"Successfully analyzed image '{file.filename}'")
+        print(f"✓ Successfully analyzed image '{file.filename}'")
         return result
         
     except Exception as e:
-        print(f"Error during image processing for '{file.filename}': {e}")
+        print(f"✗ Error analyzing image '{file.filename}': {e}")
         return f"[Error processing image: {file.filename}]"
 
 
@@ -210,11 +253,11 @@ async def _optimize_image(file_bytes: bytes, filename: str, mime_type: str) -> b
         
         # Only use optimized version if it's actually smaller
         if len(optimized_bytes) < len(file_bytes):
-            print(f"Image optimized: {len(file_bytes)} -> {len(optimized_bytes)} bytes")
+            print(f"  Image optimized: {len(file_bytes)} -> {len(optimized_bytes)} bytes")
             return optimized_bytes
         
         return file_bytes
         
     except Exception as e:
-        print(f"Image optimization failed: {e}. Using original.")
+        print(f"⚠ Image optimization failed: {e}. Using original.")
         return file_bytes
