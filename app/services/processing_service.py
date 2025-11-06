@@ -66,7 +66,7 @@ def process_pdf_locally(file_bytes: bytes) -> str:
         return "[Error extracting text from PDF document.]"
 
 
-# --- OPTIMIZED: Audio Processing with Caching ---
+# --- FIXED: Audio Processing with Better File Handling ---
 async def process_audio_with_api(file: UploadFile) -> str:
     """Transcribe audio with caching to avoid redundant API calls"""
     if not client:
@@ -83,11 +83,18 @@ async def process_audio_with_api(file: UploadFile) -> str:
             print(f"Audio transcription retrieved from cache for '{file.filename}'")
             return cached
         
-        # Create file-like object from bytes
+        # Create file-like object from bytes with proper extension
         audio_file = io.BytesIO(file_bytes)
-        audio_file.name = file.filename
+        
+        # IMPORTANT: Whisper needs the correct file extension
+        # Extract extension from original filename
+        filename = file.filename if file.filename else "audio.m4a"
+        audio_file.name = filename
+        
+        print(f"Sending audio file '{filename}' to Whisper API for transcription...")
         
         # Transcribe with optimized settings
+        # Whisper API supports: mp3, mp4, mpeg, mpga, m4a, wav, webm
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
@@ -95,13 +102,26 @@ async def process_audio_with_api(file: UploadFile) -> str:
         )
         
         result = transcription if isinstance(transcription, str) else transcription.text
+        
+        if not result or result.strip() == "":
+            print(f"WARNING: Empty transcription received for '{filename}'")
+            result = "[Transcription returned empty. The audio file may be silent or corrupted.]"
+        
         cache_result(file_hash, result)
-        print(f"Successfully transcribed audio file '{file.filename}'")
+        print(f"Successfully transcribed audio file '{filename}' - Length: {len(result)} chars")
         return result
         
     except Exception as e:
-        print(f"Error during audio transcription for '{file.filename}': {e}")
-        return f"[Error during audio transcription for {file.filename}.]"
+        error_msg = str(e)
+        print(f"Error during audio transcription for '{file.filename}': {error_msg}")
+        
+        # Provide more helpful error messages
+        if "file type" in error_msg.lower() or "format" in error_msg.lower():
+            return f"[Error: Audio format not supported by Whisper API. Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm. File: {file.filename}]"
+        elif "size" in error_msg.lower():
+            return f"[Error: Audio file too large. Maximum size is 25MB. File: {file.filename}]"
+        else:
+            return f"[Error during audio transcription for {file.filename}: {error_msg}]"
 
 
 # --- OPTIMIZED: Smart Image Processing ---

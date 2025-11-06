@@ -14,7 +14,9 @@ from app.prompts import SectionName
 router = APIRouter()
 
 
-# --- File Processing Helpers (Unchanged) ---
+# --- FIXED: File Processing Helpers with Better Audio Detection ---
+# Also add this fix to processing_service.py for the audio function
+
 async def process_single_file(file: UploadFile) -> str:
     """Helper function to process one file by routing it to the correct service."""
     if not file or not file.filename:
@@ -23,19 +25,63 @@ async def process_single_file(file: UploadFile) -> str:
     file_bytes = await file.read()
     await file.seek(0)
     
-    mime_type = magic.from_buffer(file_bytes, mime=True)
+    # Get filename in lowercase for extension checking
+    filename_lower = file.filename.lower()
+    
+    # Define audio extensions (including common video container formats used for audio)
+    audio_extensions = (
+        '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.flac', '.wma',
+        '.opus', '.amr', '.mp4', '.webm', '.mpeg', '.mpga'
+    )
+    
+    # Define image extensions
+    image_extensions = (
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', 
+        '.heic', '.heif', '.tiff', '.tif'
+    )
+    
+    # Define PDF extension
+    pdf_extensions = ('.pdf',)
     
     text = ""
-    if "audio" in mime_type:
+    
+    # PRIORITY 1: Check file extension first (more reliable for audio)
+    if filename_lower.endswith(audio_extensions):
+        print(f"Processing as AUDIO based on extension: {file.filename}")
         text = await processing_service.process_audio_with_api(file)
-    elif "pdf" in mime_type:
+    
+    elif filename_lower.endswith(pdf_extensions):
+        print(f"Processing as PDF based on extension: {file.filename}")
         text = processing_service.process_pdf_locally(file_bytes)
-    elif "image" in mime_type or file.filename.lower().endswith(('.heic', '.heif')):
+    
+    elif filename_lower.endswith(image_extensions):
+        print(f"Processing as IMAGE based on extension: {file.filename}")
         text = await processing_service.process_image_with_api(file)
+    
+    # FALLBACK: Use MIME type detection
     else:
-        text = f"[Unsupported file type: {mime_type}]"
+        try:
+            mime_type = magic.from_buffer(file_bytes, mime=True)
+            print(f"File: {file.filename}, Detected MIME: {mime_type}")
+            
+            if "audio" in mime_type or "video" in mime_type:
+                # Treat video MIME types as audio for Whisper (it can handle them)
+                print(f"Processing as AUDIO based on MIME: {file.filename}")
+                text = await processing_service.process_audio_with_api(file)
+            elif "pdf" in mime_type:
+                print(f"Processing as PDF based on MIME: {file.filename}")
+                text = processing_service.process_pdf_locally(file_bytes)
+            elif "image" in mime_type:
+                print(f"Processing as IMAGE based on MIME: {file.filename}")
+                text = await processing_service.process_image_with_api(file)
+            else:
+                text = f"[Unsupported file type: {mime_type} for file {file.filename}]"
+        except Exception as e:
+            print(f"Error detecting MIME type for {file.filename}: {e}")
+            text = f"[Error processing file: {file.filename}]"
             
     return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
+
 
 async def process_files(files: List[UploadFile]) -> str:
     """Processes a list of uploaded files in parallel."""
@@ -72,7 +118,6 @@ async def generate_section_endpoint(
     raw_input_text = await process_files(files)
     
     # --- START: PARALLEL EXECUTION ---
-    # Create two tasks that can run concurrently
     generation_task = generation_service.generate_structured_text(
         previous_sections=request_body.previous_sections,
         raw_input=raw_input_text,
@@ -83,7 +128,6 @@ async def generate_section_endpoint(
     )
     token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
-    # Run both tasks at the same time and wait for both to complete
     results = await asyncio.gather(generation_task, token_reporting_task)
     
     generated_text = results[0]
