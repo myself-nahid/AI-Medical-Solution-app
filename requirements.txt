@@ -23,3 +23,4 @@ python-dotenv
 # --- Testing Libraries (Optional but Recommended) ---
 pytest
 pytest-asyncio
+# ffmpeg

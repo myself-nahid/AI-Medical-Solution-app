@@ -14,72 +14,81 @@ from app.prompts import SectionName
 router = APIRouter()
 
 
-# In endpoints.py - Replace the ENTIRE file processing section
+# In endpoints.py - Replace the ENTIRE process_single_file function
 
 async def process_single_file(file: UploadFile) -> str:
     """Helper function to process one file by routing it to the correct service."""
     if not file or not file.filename:
         return ""
-    
+
     # Read file bytes ONCE and pass them around
     file_bytes = await file.read()
-    
-    # Reset file pointer for any subsequent reads (defensive programming)
+
+    # Reset file pointer for any subsequent reads
     await file.seek(0)
-    
-    # Detect MIME type from bytes
-    try:
-        mime_type = magic.from_buffer(file_bytes, mime=True)
-    except Exception as e:
-        print(f"MIME detection failed for {file.filename}: {e}")
-        mime_type = "application/octet-stream"
-    
+
+    if len(file_bytes) == 0:
+        return f"[Error: The file {file.filename} is empty.]"
+
+    # Use filename for initial, fast routing
     filename_lower = file.filename.lower()
-    
-    # Define common file extensions
+    print(f"Processing file: {file.filename}, Size: {len(file_bytes)} bytes")
+
+    # --- Define common file extensions for clear logic ---
     AUDIO_EXTENSIONS = (
-        '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', 
+        '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg',
         '.opus', '.wma', '.aif', '.aiff', '.webm'
     )
-    
     IMAGE_EXTENSIONS = (
-        '.heic', '.heif', '.jpg', '.jpeg', '.png', 
+        '.heic', '.heif', '.jpg', '.jpeg', '.png',
         '.gif', '.bmp', '.webp', '.tiff', '.tif'
     )
-    
-    print(f"Processing file: {file.filename}, MIME: {mime_type}, Size: {len(file_bytes)} bytes")
-    
+    VIDEO_EXTENSIONS = ('.mp4', '.mov', '.avi', '.mkv')
+
     text = ""
-    
-    # Audio files - check BOTH MIME type AND extension
-    if "audio" in mime_type or filename_lower.endswith(AUDIO_EXTENSIONS):
-        # Special case: M4A files often detected as video/mp4
-        if filename_lower.endswith('.m4a') or mime_type in ['audio/mp4', 'audio/x-m4a']:
-            text = await processing_service.process_audio_with_api(file, file_bytes)
-        elif "audio" in mime_type or filename_lower.endswith(AUDIO_EXTENSIONS):
-            text = await processing_service.process_audio_with_api(file, file_bytes)
-        else:
-            text = f"[Unsupported audio format: {file.filename}]"
-    
-    # PDF files
-    elif "pdf" in mime_type or filename_lower.endswith('.pdf'):
+
+    # --- Logic Change: Prioritize file extension, then check content (MIME) ---
+
+    # 1. Check for Audio by Extension FIRST
+    if filename_lower.endswith(AUDIO_EXTENSIONS):
+        print(f"✓ Detected Audio by extension: {file.filename}")
+        text = await processing_service.process_audio_with_api(file, file_bytes)
+
+    # 2. Check for PDF by Extension
+    elif filename_lower.endswith('.pdf'):
+        print(f"✓ Detected PDF by extension: {file.filename}")
         text = processing_service.process_pdf_locally(file_bytes)
-    
-    # Image files - check BOTH MIME type AND extension
-    elif "image" in mime_type or filename_lower.endswith(IMAGE_EXTENSIONS):
+
+    # 3. Check for Image by Extension
+    elif filename_lower.endswith(IMAGE_EXTENSIONS):
+        print(f"✓ Detected Image by extension: {file.filename}")
         text = await processing_service.process_image_with_api(file, file_bytes)
-    
-    # Video files with audio (some users might upload these)
-    elif "video" in mime_type and filename_lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.m4a')):
-        # M4A is technically a video container
-        if filename_lower.endswith('.m4a'):
-            text = await processing_service.process_audio_with_api(file, file_bytes)
-        else:
-            text = f"[Video files not supported. Please extract audio first: {file.filename}]"
-    
+
+    # 4. Handle potential video uploads (M4A is a special case)
+    elif filename_lower.endswith('.m4a'): # Explicitly handle M4A again as it can be video
+         print(f"✓ Detected M4A file, processing as audio: {file.filename}")
+         text = await processing_service.process_audio_with_api(file, file_bytes)
+    elif filename_lower.endswith(VIDEO_EXTENSIONS):
+        print(f"✗ Detected Video file: {file.filename}")
+        text = f"[Video files not supported. Please extract audio first: {file.filename}]"
+
+    # 5. If extension is unknown, fall back to MIME type detection
     else:
-        text = f"[Unsupported file type: {mime_type} - {file.filename}]"
-    
+        try:
+            mime_type = magic.from_buffer(file_bytes, mime=True)
+            print(f"  - Extension unknown, detected MIME type: {mime_type}")
+            if "audio" in mime_type:
+                text = await processing_service.process_audio_with_api(file, file_bytes)
+            elif "image" in mime_type:
+                text = await processing_service.process_image_with_api(file, file_bytes)
+            elif "pdf" in mime_type:
+                text = processing_service.process_pdf_locally(file_bytes)
+            else:
+                 text = f"[Unsupported file type: {mime_type} - {file.filename}]"
+        except Exception as e:
+            print(f"MIME detection failed for {file.filename}: {e}")
+            text = f"[Unsupported or corrupted file: {file.filename}]"
+
     return f"--- START OF FILE: {file.filename} ---\n{text}\n--- END OF FILE ---\n"
 
 
