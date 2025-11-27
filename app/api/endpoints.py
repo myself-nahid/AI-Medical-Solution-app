@@ -118,7 +118,7 @@ async def process_files(files: List[UploadFile]) -> str:
     return "\n".join(processed_results)
 
 
-# --- API Endpoints (Updated with Parallel Logic) ---
+# In endpoints.py - Fix all three endpoints
 
 @router.post("/generate_section/{section_name}", response_model=GenerationWithTokenResponse)
 async def generate_section_endpoint(
@@ -143,9 +143,8 @@ async def generate_section_endpoint(
 
     raw_input_text = await process_files(files)
     
-    # --- START: PARALLEL EXECUTION ---
-    # Create two tasks that can run concurrently
-    generation_task = generation_service.generate_structured_text(
+    # Run AI generation (no parallel token deduction)
+    generated_text = await generation_service.generate_structured_text(
         previous_sections=request_body.previous_sections,
         raw_input=raw_input_text,
         section_name=section_name.value,
@@ -153,30 +152,21 @@ async def generate_section_endpoint(
         language=language,
         specialty=specialty
     )
-    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
-    # Run both tasks at the same time and wait for both to complete
-    results = await asyncio.gather(generation_task, token_reporting_task)
-    
-    generated_text = results[0]
-    # remaining_token = results[1]
-    # --- END: PARALLEL EXECUTION ---
-
-    # ✅ --- START OF TOKEN LOGIC FIX ---
+    # Only deduct tokens if processing and generation succeeded
     remaining_token = -1
-    # Only deduct tokens if the entire process was successful.
-    # We check if the result does NOT contain our known error indicators.
     if not ("[Error" in raw_input_text or "[AI_ERROR]" in generated_text or "[Unsupported" in raw_input_text):
         remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+        print(f"✓ Successfully generated section. Tokens remaining: {remaining_token}")
     else:
         print("✗ File processing or AI generation failed. Skipping token deduction.")
-    # ✅ --- END OF TOKEN LOGIC FIX ---
     
     return GenerationWithTokenResponse(
         section_name=section_name.value, 
         generated_text=generated_text,
         remaining_token=remaining_token
     )
+
 
 @router.post("/generate_analysis_plan", response_model=GenerationWithTokenResponse)
 async def generate_analysis_plan_endpoint(
@@ -197,24 +187,20 @@ async def generate_analysis_plan_endpoint(
         
     analysis_plan_text = await process_files(files)
 
-    # --- START: PARALLEL EXECUTION ---
-    generation_task = generation_service.generate_analysis_and_plan(
+    # Run AI generation (no parallel token deduction)
+    generated_text = await generation_service.generate_analysis_and_plan(
         previous_sections=request_body.previous_sections,
         analysis_plan_text=analysis_plan_text,
         physician_notes=request_body.physician_notes,
         language=language,
         specialty=specialty
     )
-    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
 
-    results = await asyncio.gather(generation_task, token_reporting_task)
-    generated_text = results[0]
-    # remaining_token = results[1]
-    # --- END: PARALLEL EXECUTION ---
-
+    # Only deduct tokens if processing and generation succeeded
     remaining_token = -1
     if not ("[Error" in analysis_plan_text or "[AI_ERROR]" in generated_text or "[Unsupported" in analysis_plan_text):
         remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+        print(f"✓ Successfully generated analysis plan. Tokens remaining: {remaining_token}")
     else:
         print("✗ File processing or AI generation failed. Skipping token deduction.")
 
@@ -223,6 +209,7 @@ async def generate_analysis_plan_endpoint(
         generated_text=generated_text,
         remaining_token=remaining_token
     )
+
 
 @router.post("/quick_report", response_model=GenerationWithTokenResponse)
 async def quick_report_endpoint(
@@ -240,8 +227,8 @@ async def quick_report_endpoint(
     
     extracted_text = await process_files(files)
     
-    # --- START: PARALLEL EXECUTION ---
-    generation_task = generation_service.generate_structured_text(
+    # Run AI generation (no parallel token deduction)
+    generated_text = await generation_service.generate_structured_text(
         section_name=SectionName.QUICK_REPORT.value,
         raw_input=extracted_text,
         previous_sections={},
@@ -249,16 +236,12 @@ async def quick_report_endpoint(
         language=language,
         specialty=specialty
     )
-    token_reporting_task = token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
-
-    results = await asyncio.gather(generation_task, token_reporting_task)
-    generated_text = results[0]
-    # remaining_token = results[1]
-    # --- END: PARALLEL EXECUTION ---
     
+    # Only deduct tokens if processing and generation succeeded
     remaining_token = -1
     if not ("[Error" in extracted_text or "[AI_ERROR]" in generated_text or "[Unsupported" in extracted_text):
         remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+        print(f"✓ Successfully generated quick report. Tokens remaining: {remaining_token}")
     else:
         print("✗ File processing or AI generation failed. Skipping token deduction.")
 

@@ -66,9 +66,10 @@ def process_pdf_locally(file_bytes: bytes) -> str:
         return "[Error extracting text from PDF document.]"
 
 
-# --- OPTIMIZED: Audio Processing with Caching ---
+# In processing_service.py - Replace the process_audio_with_api function
+
 async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
-    """Transcribe audio with caching to avoid redundant API calls
+    """Transcribe audio with caching and improved error handling
     
     Args:
         file: The UploadFile object (for filename metadata)
@@ -88,14 +89,21 @@ async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
         # Validate file size (Whisper API limit is 25MB)
         MAX_SIZE = 25 * 1024 * 1024  # 25MB in bytes
         if len(file_bytes) > MAX_SIZE:
-            error_msg = f"[Error: Audio file '{file.filename}' is too large ({len(file_bytes)/(1024*1024):.1f}MB). Maximum size is 25MB.]"
+            error_msg = f"Audio file is too large ({len(file_bytes)/(1024*1024):.1f}MB). Maximum size is 25MB. Please compress or trim the recording."
             print(f"✗ {error_msg}")
-            return error_msg
+            return f"[Error: {error_msg}]"
         
         if len(file_bytes) == 0:
-            error_msg = f"[Error: Audio file '{file.filename}' is empty.]"
+            error_msg = "Audio file is empty. Please record again."
             print(f"✗ {error_msg}")
-            return error_msg
+            return f"[Error: {error_msg}]"
+        
+        # Minimum file size check (likely corrupted if too small)
+        MIN_SIZE = 1024  # 1KB minimum
+        if len(file_bytes) < MIN_SIZE:
+            error_msg = f"Audio file is too small ({len(file_bytes)} bytes) and may be corrupted. Please record again."
+            print(f"✗ {error_msg}")
+            return f"[Error: {error_msg}]"
         
         # Get filename and ensure it has a proper extension
         filename = file.filename
@@ -109,7 +117,6 @@ async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
         
         if not has_valid_ext:
             # Try to add appropriate extension based on content
-            # Default to .m4a for unknown audio types
             filename = f"{filename}.m4a"
             print(f"⚠ Added extension to filename: {filename}")
         
@@ -123,18 +130,18 @@ async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
         transcription = await client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
-            response_format="text"  # Faster than JSON
+            response_format="text"
         )
         
         result = transcription if isinstance(transcription, str) else transcription.text
         result = result.strip()
         
         if not result:
-            result = "[No speech detected in audio file.]"
-            print(f"⚠ No speech detected in '{file.filename}'")
-        else:
-            print(f"✓ Successfully transcribed '{file.filename}' ({len(result)} characters)")
+            error_msg = "No speech was detected in the audio. Please ensure you're speaking clearly and the microphone is working."
+            print(f"⚠ {error_msg}")
+            return f"[Error: {error_msg}]"
         
+        print(f"✓ Successfully transcribed '{file.filename}' ({len(result)} characters)")
         cache_result(file_hash, result)
         return result
         
@@ -142,15 +149,20 @@ async def process_audio_with_api(file: UploadFile, file_bytes: bytes) -> str:
         error_msg = str(e)
         print(f"✗ Error transcribing '{file.filename}': {error_msg}")
         
-        # Provide specific error messages
-        if "Invalid file format" in error_msg or "format" in error_msg.lower():
-            return f"[Error: Unsupported audio format for '{file.filename}'. Supported: MP3, M4A, WAV, FLAC, OGG, OPUS, WEBM]"
+        # Provide user-friendly error messages based on the error type
+        if "Invalid file format" in error_msg or "could not be decoded" in error_msg:
+            return "[Error: The audio file format is not supported or may be corrupted. Please try recording again or use a different format (MP3, M4A, WAV recommended).]"
+        elif "format" in error_msg.lower():
+            return "[Error: Unable to process this audio format. Please try recording again with your device's default audio settings.]"
         elif "size" in error_msg.lower():
-            return f"[Error: Audio file '{file.filename}' exceeds 25MB limit.]"
-        elif "timeout" in error_msg.lower():
-            return f"[Error: Transcription timeout for '{file.filename}'. File may be too long.]"
+            return "[Error: Audio file exceeds the 25MB limit. Please record a shorter clip or compress the file.]"
+        elif "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+            return "[Error: The audio file took too long to process. It may be too long or corrupted. Please try a shorter recording.]"
+        elif "rate limit" in error_msg.lower():
+            return "[Error: Too many transcription requests. Please wait a moment and try again.]"
         else:
-            return f"[Error transcribing '{file.filename}': {error_msg}]"
+            # Generic error - give users actionable advice
+            return f"[Error: Unable to process the audio file. This may be due to: (1) Corrupted recording, (2) Unsupported audio codec, or (3) Recording interruption. Please try recording again. Technical details: {error_msg[:100]}]"
 
 
 # --- OPTIMIZED: Smart Image Processing ---
