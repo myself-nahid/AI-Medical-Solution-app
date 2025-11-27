@@ -159,8 +159,18 @@ async def generate_section_endpoint(
     results = await asyncio.gather(generation_task, token_reporting_task)
     
     generated_text = results[0]
-    remaining_token = results[1]
+    # remaining_token = results[1]
     # --- END: PARALLEL EXECUTION ---
+
+    # ✅ --- START OF TOKEN LOGIC FIX ---
+    remaining_token = -1
+    # Only deduct tokens if the entire process was successful.
+    # We check if the result does NOT contain our known error indicators.
+    if not ("[Error" in raw_input_text or "[AI_ERROR]" in generated_text or "[Unsupported" in raw_input_text):
+        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    else:
+        print("✗ File processing or AI generation failed. Skipping token deduction.")
+    # ✅ --- END OF TOKEN LOGIC FIX ---
     
     return GenerationWithTokenResponse(
         section_name=section_name.value, 
@@ -199,8 +209,14 @@ async def generate_analysis_plan_endpoint(
 
     results = await asyncio.gather(generation_task, token_reporting_task)
     generated_text = results[0]
-    remaining_token = results[1]
+    # remaining_token = results[1]
     # --- END: PARALLEL EXECUTION ---
+
+    remaining_token = -1
+    if not ("[Error" in analysis_plan_text or "[AI_ERROR]" in generated_text or "[Unsupported" in analysis_plan_text):
+        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    else:
+        print("✗ File processing or AI generation failed. Skipping token deduction.")
 
     return GenerationWithTokenResponse(
         section_name=SectionName.ANALYSIS_AND_PLAN.value,
@@ -237,9 +253,15 @@ async def quick_report_endpoint(
 
     results = await asyncio.gather(generation_task, token_reporting_task)
     generated_text = results[0]
-    remaining_token = results[1]
+    # remaining_token = results[1]
     # --- END: PARALLEL EXECUTION ---
     
+    remaining_token = -1
+    if not ("[Error" in extracted_text or "[AI_ERROR]" in generated_text or "[Unsupported" in extracted_text):
+        remaining_token = await token_service.report_and_get_remaining_tokens(user_id=user_id, amount=5)
+    else:
+        print("✗ File processing or AI generation failed. Skipping token deduction.")
+
     return GenerationWithTokenResponse(
         section_name=SectionName.QUICK_REPORT.value,
         generated_text=generated_text,

@@ -37,13 +37,13 @@ async def generate_structured_text(
     
     try:
         response = await client.chat.completions.create(
-            model="gpt-3.5-turbo", # Use fast, cost-effective model for this
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": final_prompt}]
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"Error during OpenAI text generation for section '{section_name}': {e}")
-        return "[AI text generation failed.]"
+        return "[AI_ERROR]: AI text generation failed."
 
 
 async def generate_analysis_and_plan(
