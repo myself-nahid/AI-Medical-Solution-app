@@ -23,10 +23,19 @@ async def process_single_file(file: UploadFile) -> str:
     
     # Read file bytes ONCE and pass them around
     file_bytes = await file.read()
-    
+    print(f"Read {len(file_bytes)} bytes from file {file.filename}")
     # Reset file pointer for any subsequent reads (defensive programming)
     await file.seek(0)
+    # --- START: DETAILED LOGGING ---
+    # Use python-magic to detect the true file type from its content
+    detected_mime_type = magic.from_buffer(file_bytes, mime=True)
     
+    print("\n--- FILE RECEIVED ---")
+    print(f"  - Original Filename: {file.filename}")
+    print(f"  - Client-Sent Content-Type: {file.content_type}")
+    print(f"  - Server-Detected MIME Type: {detected_mime_type}")
+    print("---------------------\n")
+    # --- END: DETAILED LOGGING ---
     # Detect MIME type from bytes
     try:
         mime_type = magic.from_buffer(file_bytes, mime=True)
